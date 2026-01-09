@@ -604,6 +604,8 @@ def call_sambanova(api_key: str, prompt: str, max_tokens: int = 4096, proxy: Opt
         proxies = proxy if proxy else None
         
         try:
+            proxy_info = f"via {list(proxies.values())[0][:30]}..." if proxies else "DIRECT (no proxy)"
+            print(f"[LLM REQUEST] SambaNova/{model} - {proxy_info}")
             response = requests.post(url, json=data, headers=headers, timeout=180, proxies=proxies)
             
             if response.status_code == 200:
@@ -746,6 +748,8 @@ def call_groq(api_key: str, prompt: str, max_tokens: int = 4096, proxy: Optional
         proxies = proxy if proxy else None
         
         try:
+            proxy_info = f"via {list(proxies.values())[0][:30]}..." if proxies else "DIRECT (no proxy)"
+            print(f"[LLM REQUEST] Groq/{model} - {proxy_info}")
             response = requests.post(url, json=data, headers=headers, timeout=160, proxies=proxies)
             
             # Handle success
@@ -878,6 +882,8 @@ def call_cerebras(api_key: str, prompt: str, max_tokens: int = 4096, proxy: Opti
         proxies = proxy if proxy else None
         
         try:
+            proxy_info = f"via {list(proxies.values())[0][:30]}..." if proxies else "DIRECT (no proxy)"
+            print(f"[LLM REQUEST] Cerebras/{model} - {proxy_info}")
             response = requests.post(url, json=data, headers=headers, timeout=120, proxies=proxies)
             
             if response.status_code == 200:
