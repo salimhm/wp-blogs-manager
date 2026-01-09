@@ -267,7 +267,7 @@ def generate_single_article(self, article_id, run_id=None):
                     details={'post_id': wp_post_id}
                 )
             else:
-                 raise Exception("Failed to publish to WordPress")
+                 print(f\"[WP PUBLISH FAILED] Article {article_id}: {message}\")\n                 raise Exception(f\"WordPress publish failed: {message}\")
 
     except Exception as e:
         import traceback
@@ -286,5 +286,6 @@ def generate_single_article(self, article_id, run_id=None):
             site=site,
             level='error',
             source='system',
-            message=f"Failed article {article_id}: {str(e)}"
+            message=f"Failed: {article.title[:50]}...",
+            details={'article_id': article_id, 'error': str(e)}
         )

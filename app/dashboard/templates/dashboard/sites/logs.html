@@ -40,7 +40,15 @@
                         </span>
                     </td>
                     <td>{{ log.source }}</td>
-                    <td>{{ log.message }}</td>
+                    <td>
+                        {% if log.details.article_id %}
+                        <a href="{% url 'dashboard:article_detail' site.id log.details.article_id %}" style="color: #667eea;">
+                            {{ log.message }}
+                        </a>
+                        {% else %}
+                        {{ log.message }}
+                        {% endif %}
+                    </td>
                     <td>
                         {% if log.details %}
                         <details>
