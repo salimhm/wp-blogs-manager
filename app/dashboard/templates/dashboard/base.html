@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Dashboard{% endblock %} | WP Manager</title>
+    <link rel="stylesheet" href="{% load static %}{% static 'dashboard/css/styles.css' %}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <span class="logo-icon">◈</span>
+                    <span class="logo-text">WP Manager</span>
+                </div>
+            </div>
+            
+            <nav class="sidebar-nav">
+                <div class="nav-section">
+                    <h3 class="nav-section-title">Sites</h3>
+                    <ul class="nav-list">
+                        <li>
+                            <a href="{% url 'dashboard:home' %}" class="nav-link {% if request.resolver_match.url_name == 'home' %}active{% endif %}">
+                                <span class="nav-icon">📊</span>
+                                <span>Dashboard</span>
+                            </a>
+                        </li>
+                        <li>
+                            <a href="{% url 'dashboard:add_site' %}" class="nav-link {% if request.resolver_match.url_name == 'add_site' %}active{% endif %}">
+                                <span class="nav-icon">➕</span>
+                                <span>Add Site</span>
+                            </a>
+                        </li>
+                        <li>
+                            <a href="{% url 'dashboard:keyword_lists' %}" class="nav-link {% if 'keywords' in request.path %}active{% endif %}">
+                                <span class="nav-icon">📝</span>
+                                <span>Keywords</span>
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+                
+                <div class="nav-section">
+                    <h3 class="nav-section-title">Settings</h3>
+                    <ul class="nav-list">
+                        <li>
+                            <a href="{% url 'dashboard:settings' %}" class="nav-link {% if 'settings' in request.path %}active{% endif %}">
+                                <span class="nav-icon">⚙️</span>
+                                <span>General</span>
+                            </a>
+                        </li>
+                        <li>
+                            <a href="{% url 'dashboard:cloudflare_settings' %}" class="nav-link {% if 'cloudflare' in request.path %}active{% endif %}">
+                                <span class="nav-icon">☁️</span>
+                                <span>Cloudflare</span>
+                            </a>
+                        </li>
+                        <li>
+                            <a href="{% url 'dashboard:proxy_list' %}" class="nav-link {% if 'proxies' in request.path and 'sites' not in request.path %}active{% endif %}">
+                                <span class="nav-icon">🛡️</span>
+                                <span>Proxies</span>
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </nav>
+            
+            <div class="sidebar-footer">
+                <div class="stats-mini">
+                    <span class="stat-item">{{ total_sites|default:0 }} sites</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="content-header">
+                <h1 class="page-title">{% block page_title %}Dashboard{% endblock %}</h1>
+                {% block header_actions %}{% endblock %}
+            </header>
+
+            {% if messages %}
+            <div class="messages">
+                {% for message in messages %}
+                <div class="alert alert-{{ message.tags }}">
+                    {{ message }}
+                    <button class="alert-close" onclick="this.parentElement.remove()">×</button>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            <div class="content-body">
+                {% block content %}{% endblock %}
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Auto-dismiss alerts after 5 seconds (only those in the messages container)
+        document.querySelectorAll('.messages .alert').forEach(alert => {
+            setTimeout(() => alert.remove(), 5000);
+        });
+    </script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

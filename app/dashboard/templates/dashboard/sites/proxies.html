@@ -1,0 +1,300 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}Proxies - {{ site.domain }}{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Add Proxy</h2>
+    </div>
+    <div class="card-body">
+        <form id="addProxyForm">
+            {% csrf_token %}
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">Type</label>
+                    <select name="proxy_type" id="proxyType" class="form-select">
+                        <option value="http">HTTP</option>
+                        <option value="socks5">SOCKS5</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Host</label>
+                    <input type="text" name="host" id="proxyHost" class="form-input" placeholder="proxy.example.com" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Port</label>
+                    <input type="number" name="port" id="proxyPort" class="form-input" placeholder="8080" required>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">Username (optional)</label>
+                    <input type="text" name="username" id="proxyUsername" class="form-input">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Password (optional)</label>
+                    <input type="password" name="password" id="proxyPassword" class="form-input">
+                </div>
+                <div class="form-group" style="align-self: flex-end;">
+                    <button type="button" id="testAndAddBtn" class="btn btn-primary" onclick="testAndAddProxy()">
+                        Test & Add Proxy
+                    </button>
+                </div>
+            </div>
+            <div id="addProxyResult" class="proxy-result hidden" style="margin-top: 16px;"></div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Configured Proxies</h2>
+    </div>
+    <div class="card-body">
+        {% if proxies %}
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Host</th>
+                    <th>Port</th>
+                    <th>Auth</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="proxiesTableBody">
+                {% for proxy in proxies %}
+                <tr id="proxy-row-{{ proxy.id }}">
+                    <td><span class="badge badge-info">{{ proxy.proxy_type|upper }}</span></td>
+                    <td>{{ proxy.host }}</td>
+                    <td>{{ proxy.port }}</td>
+                    <td>{% if proxy.username %}Yes{% else %}No{% endif %}</td>
+                    <td>
+                        <span class="badge {% if proxy.is_active %}badge-success{% else %}badge-secondary{% endif %}">
+                            {% if proxy.is_active %}Active{% else %}Inactive{% endif %}
+                        </span>
+                        <span id="proxy-test-result-{{ proxy.id }}" class="proxy-test-result"></span>
+                    </td>
+                    <td>
+                        <button type="button" class="btn btn-sm btn-secondary" data-site-id="{{ site.id }}" data-proxy-id="{{ proxy.id }}" onclick="testExistingProxy(this.dataset.siteId, this.dataset.proxyId)">
+                            Test
+                        </button>
+                        <form method="post" action="{% url 'dashboard:delete_proxy' site.id proxy.id %}" style="display:inline;">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete this proxy?')">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="text-muted" id="noProxiesMsg">No proxies configured</p>
+        {% endif %}
+    </div>
+</div>
+
+<div class="form-actions">
+    <a href="{% url 'dashboard:site_detail' site.id %}" class="btn btn-ghost">← Back to Site</a>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const csrfToken = '{{ csrf_token }}';
+const siteId = '{{ site.id }}';
+
+// Helper function for fetch with timeout
+async function fetchWithTimeout(url, options, timeoutMs = 30000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    
+    try {
+        const response = await fetch(url, {
+            ...options,
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        return response;
+    } catch (error) {
+        clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+            throw new Error('Request timed out (30s)');
+        }
+        throw error;
+    }
+}
+
+async function testAndAddProxy() {
+    const btn = document.getElementById('testAndAddBtn');
+    const resultDiv = document.getElementById('addProxyResult');
+    
+    // Check if elements exist
+    if (!btn || !resultDiv) {
+        console.error('[Proxy Test] Required DOM elements not found');
+        alert('Error: Form elements not found. Please refresh the page.');
+        return;
+    }
+    
+    const proxyTypeEl = document.getElementById('proxyType');
+    const hostEl = document.getElementById('proxyHost');
+    const portEl = document.getElementById('proxyPort');
+    const usernameEl = document.getElementById('proxyUsername');
+    const passwordEl = document.getElementById('proxyPassword');
+    
+    if (!proxyTypeEl || !hostEl || !portEl) {
+        console.error('[Proxy Test] Form input elements not found');
+        alert('Error: Form inputs not found. Please refresh the page.');
+        return;
+    }
+    
+    const proxyType = proxyTypeEl.value.trim();
+    const host = hostEl.value.trim();
+    const port = portEl.value.trim();
+    const username = usernameEl ? usernameEl.value.trim() : '';
+    const password = passwordEl ? passwordEl.value : '';
+    
+    // Frontend validation
+    if (!host) {
+        resultDiv.className = 'alert alert-error';
+        resultDiv.textContent = '❌ Host is required';
+        resultDiv.classList.remove('hidden');
+        hostEl.focus();
+        return;
+    }
+    
+    if (!port) {
+        resultDiv.className = 'alert alert-error';
+        resultDiv.textContent = '❌ Port is required';
+        resultDiv.classList.remove('hidden');
+        portEl.focus();
+        return;
+    }
+    
+    const portNum = parseInt(port);
+    if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+        resultDiv.className = 'alert alert-error';
+        resultDiv.textContent = '❌ Port must be a number between 1 and 65535';
+        resultDiv.classList.remove('hidden');
+        portEl.focus();
+        return;
+    }
+    
+    // Disable button and show testing state
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Testing...';
+    resultDiv.className = 'alert alert-info';
+    resultDiv.textContent = 'Testing proxy connection (this may take up to 30 seconds)...';
+    resultDiv.classList.remove('hidden');
+    
+    console.log('[Proxy Test] Starting test for', proxyType + '://' + host + ':' + port);
+    
+    try {
+        // Step 1: Test the proxy
+        const testResponse = await fetchWithTimeout('/api/test-proxy/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken
+            },
+            body: JSON.stringify({
+                proxy_type: proxyType,
+                host: host,
+                port: portNum,
+                username: username || '',
+                password: password || ''
+            })
+        }, 35000);
+        
+        console.log('[Proxy Test] Response status:', testResponse.status);
+        
+        if (!testResponse.ok) {
+            throw new Error('Server returned ' + testResponse.status);
+        }
+        
+        const testData = await testResponse.json();
+        console.log('[Proxy Test] Response data:', testData);
+        
+        if (!testData.success) {
+            resultDiv.className = 'alert alert-error';
+            resultDiv.textContent = '❌ Proxy test failed: ' + testData.message;
+            btn.disabled = false;
+            btn.innerHTML = 'Test & Add Proxy';
+            return;
+        }
+        
+        // Step 2: Test passed, now add the proxy
+        resultDiv.className = 'alert alert-success';
+        resultDiv.textContent = '✓ Proxy working (IP: ' + (testData.info.proxy_ip || 'verified') + ')! Adding to site...';
+        
+        const formData = new FormData();
+        formData.append('proxy_type', proxyType);
+        formData.append('host', host);
+        formData.append('port', portNum);
+        formData.append('username', username);
+        formData.append('password', password);
+        formData.append('csrfmiddlewaretoken', csrfToken);
+        
+        const addResponse = await fetch(window.location.href, {
+            method: 'POST',
+            body: formData
+        });
+        
+        if (addResponse.ok) {
+            resultDiv.textContent = '✓ Proxy added successfully! IP: ' + (testData.info.proxy_ip || 'verified') + ' - Reloading...';
+            
+            // Reload page to show new proxy
+            setTimeout(() => {
+                window.location.reload();
+            }, 1000);
+            return;
+        } else {
+            resultDiv.className = 'alert alert-error';
+            resultDiv.textContent = '❌ Failed to save proxy to database';
+        }
+        
+    } catch (error) {
+        console.error('[Proxy Test] Error:', error);
+        if (resultDiv) {
+            resultDiv.className = 'alert alert-error';
+            resultDiv.textContent = '❌ Error: ' + error.message;
+        } else {
+            alert('Error: ' + error.message);
+        }
+    }
+    
+    if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = 'Test & Add Proxy';
+    }
+}
+
+async function testExistingProxy(proxySiteId, proxyId) {
+    const resultSpan = document.getElementById('proxy-test-result-' + proxyId);
+    
+    resultSpan.innerHTML = '<span class="badge badge-warning">Testing...</span>';
+    
+    try {
+        const response = await fetchWithTimeout('/sites/' + proxySiteId + '/proxies/' + proxyId + '/test/', {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': csrfToken
+            }
+        }, 35000);
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            resultSpan.innerHTML = '<span class="badge badge-success">✓ ' + (data.info.proxy_ip || 'Working') + '</span>';
+        } else {
+            resultSpan.innerHTML = '<span class="badge badge-danger">✗ Failed</span>';
+            alert('Proxy test failed: ' + data.message);
+        }
+    } catch (error) {
+        resultSpan.innerHTML = '<span class="badge badge-danger">✗ ' + error.message + '</span>';
+    }
+}
+</script>
+{% endblock %}

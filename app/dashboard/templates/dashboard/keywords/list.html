@@ -1,0 +1,63 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}Keyword Lists{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Upload Keyword List</h2>
+    </div>
+    <div class="card-body">
+        <form method="post" enctype="multipart/form-data">
+            {% csrf_token %}
+            <div class="form-row">
+                <div class="form-group" style="flex: 1;">
+                    <label class="form-label">JSON File</label>
+                    <input type="file" name="keyword_file" accept=".json" class="form-input" required>
+                    <small class="form-help">Upload a JSON file with array of {"h2s": [...]} objects</small>
+                </div>
+                <div class="form-group" style="align-self: flex-end;">
+                    <button type="submit" class="btn btn-primary">Upload</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Available Lists</h2>
+    </div>
+    <div class="card-body">
+        {% if lists %}
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Items</th>
+                    <th>Uploaded</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for list in lists %}
+                <tr>
+                    <td><strong>{{ list.name }}</strong></td>
+                    <td>{{ list.item_count }} keyword sets</td>
+                    <td>{{ list.created_at|date:"M d, Y" }}</td>
+                    <td>
+                        <form method="post" action="{% url 'dashboard:delete_keyword_list' list.id %}" style="display:inline;">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete this list?')">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="text-muted">No keyword lists uploaded yet.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

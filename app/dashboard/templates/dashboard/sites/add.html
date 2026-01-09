@@ -1,0 +1,135 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}Add Site{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Add WordPress Site</h2>
+    </div>
+    <div class="card-body">
+        <form method="post" id="addSiteForm">
+            {% csrf_token %}
+            
+            <!-- Step 1: Domain -->
+            <div class="form-group">
+                <label for="domain" class="form-label">Domain Name</label>
+                <input 
+                    type="text" 
+                    id="domain" 
+                    name="domain" 
+                    class="form-input" 
+                    placeholder="example.com"
+                    value="{{ initial_domain|default:'' }}"
+                    required
+                >
+                <span class="form-hint">Enter the domain without http:// or https://</span>
+            </div>
+
+            <!-- Step 2: Installation Type -->
+            <div class="form-group">
+                <label class="form-label">Installation Type</label>
+                <div class="button-group">
+                    <button 
+                        type="button" 
+                        class="btn btn-lg btn-outline installation-btn" 
+                        data-type="fresh"
+                        onclick="selectInstallationType('fresh')"
+                    >
+                        <span class="btn-icon">🆕</span>
+                        <span class="btn-text">Fresh Installation</span>
+                        <span class="btn-desc">Auto-generate credentials</span>
+                    </button>
+                    <button 
+                        type="button" 
+                        class="btn btn-lg btn-outline installation-btn" 
+                        data-type="existing"
+                        onclick="selectInstallationType('existing')"
+                    >
+                        <span class="btn-icon">🔗</span>
+                        <span class="btn-text">Already Established</span>
+                        <span class="btn-desc">Enter existing credentials</span>
+                    </button>
+                </div>
+                <input type="hidden" name="installation_type" id="installationType">
+            </div>
+
+            <!-- Step 3: Credentials (for existing sites) -->
+            <div id="credentialsSection" class="form-section hidden">
+                <div class="form-group">
+                    <label for="username" class="form-label">WordPress Username</label>
+                    <input 
+                        type="text" 
+                        id="username" 
+                        name="username" 
+                        class="form-input" 
+                        placeholder="admin"
+                    >
+                </div>
+                <div class="form-group">
+                    <label for="app_password" class="form-label">WP Application Password</label>
+                    <input 
+                        type="password" 
+                        id="app_password" 
+                        name="app_password" 
+                        class="form-input"
+                        placeholder="xxxx xxxx xxxx xxxx"
+                    >
+                    <p class="form-hint">Go to Users > Profile > Application Passwords in WordPress to generate one.</p>
+                </div>
+                <div class="form-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" name="verify_now" checked>
+                        <span>Verify credentials now</span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Submit -->
+            <div class="form-actions">
+                <a href="{% url 'dashboard:home' %}" class="btn btn-ghost">Cancel</a>
+                <button type="submit" class="btn btn-primary" id="submitBtn" disabled>
+                    Add Site
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function selectInstallationType(type) {
+    // Update hidden input
+    document.getElementById('installationType').value = type;
+    
+    // Update button states
+    document.querySelectorAll('.installation-btn').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.dataset.type === type) {
+            btn.classList.add('active');
+        }
+    });
+    
+    // Show/hide credentials section
+    const credSection = document.getElementById('credentialsSection');
+    if (type === 'existing') {
+        credSection.classList.remove('hidden');
+    } else {
+        credSection.classList.add('hidden');
+    }
+    
+    // Enable submit button
+    document.getElementById('submitBtn').disabled = false;
+}
+
+// Auto-select existing if domain is present
+window.addEventListener('DOMContentLoaded', (event) => {
+    const domainInput = document.getElementById('domain');
+    if (domainInput.value.trim() !== '') {
+        selectInstallationType('existing');
+    }
+});
+</script>
+{% endblock %}

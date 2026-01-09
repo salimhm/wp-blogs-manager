@@ -1,0 +1,185 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}{{ site.domain }}{% endblock %}
+
+{% block header_actions %}
+<div class="header-actions">
+    <a href="{% url 'dashboard:site_logs' site.id %}" class="btn btn-secondary">📋 View Logs</a>
+    <a href="{% url 'dashboard:edit_site' site.id %}" class="btn btn-secondary">✏️ Edit</a>
+    <form method="post" action="{% url 'dashboard:verify_site' site.id %}" style="display:inline;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-secondary">Verify Credentials</button>
+    </form>
+    <form method="post" action="{% url 'dashboard:delete_site' site.id %}" style="display:inline;" onsubmit="return confirm('Delete this site?')">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-danger">Delete</button>
+    </form>
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="detail-grid">
+    <!-- Analytics -->
+    <div class="card" style="grid-column: 1 / -1;">
+        <div class="card-header">
+            <h2 class="card-title">Analytics</h2>
+            <div class="card-actions">
+                <span style="font-size: 14px; opacity: 0.7;">Total Articles: {{ stats.total }}</span>
+            </div>
+        </div>
+        <div class="card-body" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px;">
+            <div style="background: rgba(46, 204, 113, 0.1); padding: 16px; border-radius: 8px; text-align: center;">
+                <h3 style="margin: 0; color: #2ecc71; font-size: 24px;">{{ stats.published }}</h3>
+                <span style="font-size: 12px; opacity: 0.7;">PUBLISHED</span>
+            </div>
+            <div style="background: rgba(52, 152, 219, 0.1); padding: 16px; border-radius: 8px; text-align: center;">
+                <h3 style="margin: 0; color: #3498db; font-size: 24px;">{{ stats.ready }}</h3>
+                <span style="font-size: 12px; opacity: 0.7;">READY</span>
+            </div>
+            <div style="background: rgba(241, 196, 15, 0.1); padding: 16px; border-radius: 8px; text-align: center;">
+                <h3 style="margin: 0; color: #f1c40f; font-size: 24px;">{{ stats.generating }}</h3>
+                <span style="font-size: 12px; opacity: 0.7;">GENERATING</span>
+            </div>
+            <div style="background: rgba(231, 76, 60, 0.1); padding: 16px; border-radius: 8px; text-align: center;">
+                <h3 style="margin: 0; color: #e74c3c; font-size: 24px;">{{ stats.failed }}</h3>
+                <span style="font-size: 12px; opacity: 0.7;">FAILED</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Site Info -->
+    <div class="card">
+        <div class="card-header">
+            <h2 class="card-title">Site Information</h2>
+            <span class="badge {% if site.is_verified %}badge-success{% else %}badge-warning{% endif %}">
+                {% if site.is_verified %}Verified{% else %}Not Verified{% endif %}
+            </span>
+        </div>
+        <div class="card-body">
+            <div class="info-list">
+                <div class="info-item">
+                    <span class="info-label">Domain</span>
+                    <span class="info-value">
+                        <a href="https://{{ site.domain }}" target="_blank">{{ site.domain }} ↗</a>
+                    </span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Username</span>
+                    <span class="info-value">{{ site.wp_username }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Password</span>
+                    <span class="info-value password-field">
+                        <span class="password-masked">••••••••</span>
+                        <button class="btn btn-sm btn-ghost" onclick="togglePassword(this, '{{ site.wp_password }}')">Show</button>
+                    </span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">App Password</span>
+                    <span class="info-value password-field">
+                        {% if site.wp_app_password %}
+                        <span class="password-masked">••••••••</span>
+                        <button class="btn btn-sm btn-ghost" onclick="togglePassword(this, '{{ site.wp_app_password }}')">Show</button>
+                        {% else %}
+                        <span class="text-muted">Not set</span>
+                        <a href="https://{{ site.domain }}/wp-admin/profile.php#application-passwords-section" target="_blank" class="btn btn-sm btn-ghost">Create in WP →</a>
+                        {% endif %}
+                    </span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Type</span>
+                    <span class="info-value">
+                        {% if site.is_fresh_installation %}Fresh Installation{% else %}Existing Site{% endif %}
+                    </span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Added</span>
+                    <span class="info-value">{{ site.created_at|date:"M d, Y H:i" }}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Links -->
+    <div class="card">
+        <div class="card-header">
+            <h2 class="card-title">Quick Actions</h2>
+        </div>
+        <div class="card-body">
+            <div class="action-list">
+                <a href="https://{{ site.domain }}/wp-admin" target="_blank" class="action-link">
+                    <span class="action-icon">🔐</span>
+                    <span>WP Admin</span>
+                </a>
+                <a href="{% url 'dashboard:article_list' site.id %}" class="action-link">
+                    <span class="action-icon">📝</span>
+                    <span>Articles</span>
+                </a>
+                <a href="{% url 'dashboard:manage_api_keys' site.id %}" class="action-link">
+                    <span class="action-icon">🔑</span>
+                    <span>API Keys ({{ api_keys.count }})</span>
+                </a>
+                <a href="{% url 'dashboard:manage_proxies' site.id %}" class="action-link">
+                    <span class="action-icon">🌐</span>
+                    <span>Proxies ({{ proxies.count }})</span>
+                </a>
+                <a href="{% url 'dashboard:start_daily_run' site.id %}" class="action-link highlight">
+                    <span class="action-icon">🚀</span>
+                    <span>Daily Automation</span>
+                </a>
+                <a href="{% url 'dashboard:daily_run_history' site.id %}" class="action-link">
+                    <span class="action-icon">📜</span>
+                    <span>Run History</span>
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- API Keys -->
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">API Keys</h2>
+        <a href="{% url 'dashboard:manage_api_keys' site.id %}" class="btn btn-sm btn-secondary">Manage</a>
+    </div>
+    <div class="card-body">
+        {% if api_keys %}
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Provider</th>
+                    <th>Model</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for key in api_keys %}
+                <tr>
+                    <td>{{ key.get_provider_display }}</td>
+                    <td>{{ key.model_name|default:"-" }}</td>
+                    <td><span class="badge {% if key.is_active %}badge-success{% else %}badge-secondary{% endif %}">{% if key.is_active %}Active{% else %}Inactive{% endif %}</span></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p class="text-muted">No API keys configured</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function togglePassword(btn, password) {
+    const masked = btn.previousElementSibling;
+    if (masked.textContent === '••••••••') {
+        masked.textContent = password;
+        btn.textContent = 'Hide';
+    } else {
+        masked.textContent = '••••••••';
+        btn.textContent = 'Show';
+    }
+}
+</script>
+{% endblock %}

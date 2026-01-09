@@ -1,0 +1,102 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}Cloudflare Settings{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Cloudflare API Configuration</h2>
+        <button type="button" class="btn btn-secondary" onclick="testConnection()">Test Connection</button>
+    </div>
+    <div class="card-body">
+        <form method="post">
+            {% csrf_token %}
+            <div class="form-group">
+                <label class="form-label">API Token</label>
+                <input 
+                    type="password" 
+                    name="api_token" 
+                    class="form-input" 
+                    value="{{ cloudflare.api_token|default:'' }}"
+                    placeholder="Enter your Cloudflare API token"
+                    required
+                >
+                <span class="form-hint">Create at Cloudflare Dashboard → My Profile → API Tokens → Create Token → "Edit zone DNS"</span>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Default Zone ID</label>
+                <input 
+                    type="text" 
+                    name="default_zone_id" 
+                    class="form-input" 
+                    value="{{ cloudflare.default_zone_id|default:'' }}"
+                    placeholder="32-character zone ID"
+                >
+                <span class="form-hint">Found in Cloudflare Dashboard → Select Domain → Overview (right sidebar)</span>
+            </div>
+            
+            {% if zones %}
+            <div class="form-group">
+                <label class="form-label">Available Zones</label>
+                <div class="zones-list">
+                    {% for zone in zones %}
+                    <div class="zone-item" style="display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #eee;">
+                        <div class="zone-info">
+                            <span class="zone-name" style="font-weight: 500; display: block;">{{ zone.name }}</span>
+                            <code class="zone-id" style="color: #666; font-size: 0.85em;">{{ zone.id }}</code>
+                        </div>
+                        {% if zone.is_added %}
+                            <span class="badge badge-success" style="color: #10B981; font-weight: 500;">
+                                <span style="margin-right: 4px;">✓</span> Added
+                            </span>
+                        {% else %}
+                            <a href="{% url 'dashboard:add_site' %}?domain={{ zone.name }}" class="btn btn-sm btn-primary">Add Site</a>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+            
+            <div class="form-actions">
+                <a href="{% url 'dashboard:settings' %}" class="btn btn-ghost">Cancel</a>
+                <button type="submit" class="btn btn-primary">Save Settings</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="testResult" class="alert hidden"></div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+async function testConnection() {
+    const resultDiv = document.getElementById('testResult');
+    resultDiv.className = 'alert alert-info';
+    resultDiv.textContent = 'Testing connection...';
+    resultDiv.classList.remove('hidden');
+    
+    try {
+        const response = await fetch('{% url "dashboard:test_cloudflare" %}', {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': '{{ csrf_token }}'
+            }
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            resultDiv.className = 'alert alert-success';
+            resultDiv.textContent = data.message;
+        } else {
+            resultDiv.className = 'alert alert-error';
+            resultDiv.textContent = data.message;
+        }
+    } catch (error) {
+        resultDiv.className = 'alert alert-error';
+        resultDiv.textContent = 'Network error: ' + error.message;
+    }
+}
+</script>
+{% endblock %}

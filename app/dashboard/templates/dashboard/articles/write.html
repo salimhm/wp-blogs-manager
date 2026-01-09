@@ -1,0 +1,104 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}Write Articles - {{ site.domain }}{% endblock %}
+
+{% block content %}
+{% if not has_groq_key %}
+<div class="alert alert-warning">
+    <strong>⚠️ No Groq API Key!</strong> 
+    <a href="{% url 'dashboard:manage_api_keys' site.id %}">Add one</a> before generating articles.
+</div>
+{% endif %}
+
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Generate Articles from Keywords</h2>
+    </div>
+    <div class="card-body">
+        {% if keyword_lists %}
+        <form method="post" id="writeForm">
+            {% csrf_token %}
+            <div class="form-group">
+                <label class="form-label">Select Keyword List</label>
+                <select name="keyword_list" id="keywordListSelect" class="form-select" required onchange="showItems()">
+                    <option value="">-- Choose a list --</option>
+                    {% for list in keyword_lists %}
+                    <option value="{{ list.id }}" data-items='{{ list.items|safe }}'>
+                        {{ list.name }} ({{ list.item_count }} articles)
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            
+            <div id="itemsContainer" class="hidden" style="margin-top: 16px;">
+                <div class="form-group">
+                    <label class="form-label">Select H2 Sets to Create (or leave empty for all)</label>
+                    <div id="itemsList" style="max-height: 400px; overflow-y: auto; background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px;"></div>
+                </div>
+                <button type="button" class="btn btn-ghost btn-sm" onclick="selectAll()">Select All</button>
+                <button type="button" class="btn btn-ghost btn-sm" onclick="selectNone()">Clear Selection</button>
+            </div>
+            
+            <div style="margin-top: 20px;">
+                <button type="submit" class="btn btn-primary" {% if not has_groq_key %}disabled{% endif %}>
+                    Create Pending Articles
+                </button>
+            </div>
+        </form>
+        {% else %}
+        <p class="text-muted">No keyword lists available. <a href="{% url 'dashboard:keyword_lists' %}">Upload one first!</a></p>
+        {% endif %}
+    </div>
+</div>
+
+<div class="form-actions">
+    <a href="{% url 'dashboard:article_list' site.id %}" class="btn btn-ghost">← Back to Articles</a>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function showItems() {
+    const select = document.getElementById('keywordListSelect');
+    const option = select.options[select.selectedIndex];
+    const container = document.getElementById('itemsContainer');
+    const itemsList = document.getElementById('itemsList');
+    
+    if (!option.value) {
+        container.classList.add('hidden');
+        return;
+    }
+    
+    let items = [];
+    try {
+        const itemsStr = option.getAttribute('data-items');
+        items = JSON.parse(itemsStr.replace(/'/g, '"')) || [];
+    } catch(e) {
+        console.error('Parse error:', e);
+        items = [];
+    }
+    
+    if (items.length === 0) {
+        container.classList.add('hidden');
+        return;
+    }
+    
+    itemsList.innerHTML = items.map(item => `
+        <label style="display: block; padding: 8px; margin: 4px 0; background: rgba(255,255,255,0.05); border-radius: 4px; cursor: pointer;">
+            <input type="checkbox" name="selected_indices" value="${item.index}" style="margin-right: 8px;">
+            <strong>#${item.index + 1}</strong> - ${item.preview} <span class="text-muted">(${item.count} H2s)</span>
+        </label>
+    `).join('');
+    
+    container.classList.remove('hidden');
+}
+
+function selectAll() {
+    document.querySelectorAll('#itemsList input[type="checkbox"]').forEach(cb => cb.checked = true);
+}
+
+function selectNone() {
+    document.querySelectorAll('#itemsList input[type="checkbox"]').forEach(cb => cb.checked = false);
+}
+</script>
+{% endblock %}

@@ -1,0 +1,20 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}Settings{% endblock %}
+
+{% block content %}
+<div class="settings-grid">
+    <a href="{% url 'dashboard:cloudflare_settings' %}" class="settings-card">
+        <div class="settings-icon">☁️</div>
+        <div class="settings-info">
+            <h3>Cloudflare</h3>
+            <p>Configure DNS management</p>
+            {% if cloudflare and cloudflare.api_token %}
+            <span class="badge badge-success">Configured</span>
+            {% else %}
+            <span class="badge badge-warning">Not configured</span>
+            {% endif %}
+        </div>
+    </a>
+</div>
+{% endblock %}

@@ -1,0 +1,63 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}Start Daily Run{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Configure Automation</h2>
+                <a href="{% url 'dashboard:site_detail' site.id %}" class="btn btn-sm btn-ghost">
+                    ← Back to Site
+                </a>
+            </div>
+            
+            <div class="card-body">
+                <form method="post">
+                    {% csrf_token %}
+                    
+                    <div class="form-section">
+                        <div class="form-group">
+                            <label for="keyword_list" class="form-label">Keyword List</label>
+                            <select class="form-input" id="keyword_list" name="keyword_list" required>
+                                <option value="">-- Select a keyword list --</option>
+                                {% for kl in keyword_lists %}
+                                <option value="{{ kl.id }}">{{ kl.name }} ({{ kl.item_count }} H2 sets, {{ kl.pending_count }} pending)</option>
+                                {% empty %}
+                                <option value="" disabled>No keyword lists available</option>
+                                {% endfor %}
+                            </select>
+                            <span class="form-hint">Choose which keyword list to generate articles from.</span>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="target_count" class="form-label">Target Article Count</label>
+                            <input type="number" class="form-input" id="target_count" name="target_count" value="10" min="1" required>
+                            <span class="form-hint">How many articles do you want to generate?</span>
+                        </div>
+                    </div>
+                    
+                    <div class="alert alert-info mt-4">
+                        <div style="flex: 1">
+                            <strong><i class="bi bi-clock-history"></i> Automatic Scheduling</strong>
+                            <p class="mb-0 mt-1 small" style="opacity: 0.9">
+                                The run will start <strong>immediately</strong>. The system will automatically pace the generation over the next 20 hours to prevent API rate limits. 
+                                <br>You can stop the run at any time.
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary btn-lg" style="width: 100%">
+                            <span class="btn-icon">🚀</span>
+                            <span class="btn-text">Start Daily Generation Now</span>
+                            <span class="btn-desc">Starts immediately & runs in background</span>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,70 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}Logs - {{ site.domain }}{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Site Logs: {{ site.domain }}</h2>
+        <div class="card-actions">
+            <div class="btn-group">
+                <a href="?level=" class="btn btn-sm {% if not current_level %}btn-primary{% else %}btn-secondary{% endif %}">All</a>
+                <a href="?level=error" class="btn btn-sm {% if current_level == 'error' %}btn-danger{% else %}btn-secondary{% endif %}">Errors</a>
+                <a href="?level=warning" class="btn btn-sm {% if current_level == 'warning' %}btn-warning{% else %}btn-secondary{% endif %}">Warnings</a>
+                <a href="?level=info" class="btn btn-sm {% if current_level == 'info' %}btn-info{% else %}btn-secondary{% endif %}">Info</a>
+            </div>
+        </div>
+    </div>
+    <div class="card-body">
+        {% if logs %}
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Level</th>
+                    <th>Source</th>
+                    <th>Message</th>
+                    <th>Details</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in logs %}
+                <tr>
+                    <td style="white-space: nowrap;">{{ log.created_at|date:"M d H:i:s" }}</td>
+                    <td>
+                        <span class="badge 
+                            {% if log.level == 'error' %}badge-danger
+                            {% elif log.level == 'warning' %}badge-warning
+                            {% else %}badge-info{% endif %}">
+                            {{ log.level|upper }}
+                        </span>
+                    </td>
+                    <td>{{ log.source }}</td>
+                    <td>{{ log.message }}</td>
+                    <td>
+                        {% if log.details %}
+                        <details>
+                            <summary style="cursor: pointer; color: #667eea;">View Details</summary>
+                            <pre style="margin-top: 8px; font-size: 11px; background: rgba(0,0,0,0.2); padding: 8px; border-radius: 4px; overflow-x: auto;">{{ log.details|pprint }}</pre>
+                        </details>
+                        {% else %}
+                        <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div style="text-align: center; padding: 40px; color: rgba(255,255,255,0.4);">
+            <div style="font-size: 48px; margin-bottom: 16px;">📋</div>
+            <p>No logs found for this filter.</p>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="form-actions">
+    <a href="{% url 'dashboard:site_detail' site.id %}" class="btn btn-ghost">← Back to Site</a>
+</div>
+{% endblock %}
