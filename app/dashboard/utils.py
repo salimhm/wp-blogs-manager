@@ -660,8 +660,8 @@ import re
 # Models for rotation (to avoid rate limits)
 GROQ_MODELS = [
     'llama-3.3-70b-versatile',
-    'moonshotai/kimi-k2-instruct',
-    'moonshotai/kimi-k2-instruct-0905',
+    # 'moonshotai/kimi-k2-instruct',
+    # 'moonshotai/kimi-k2-instruct-0905',
     'llama-3.1-8b-instant',
     'openai/gpt-oss-120b',
     'openai/gpt-oss-20b',
