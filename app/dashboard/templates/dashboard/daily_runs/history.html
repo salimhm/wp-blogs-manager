@@ -49,7 +49,7 @@
                         </span>
                     </td>
                     <td>
-                        <a href="{% url 'dashboard:daily_run_status' site.id run.id %}" class="btn btn-ghost btn-sm">View</a>
+                        <a href="{% url 'dashboard:daily_run_status' site.id run.run_number %}" class="btn btn-ghost btn-sm">View</a>
                     </td>
                 </tr>
                 {% endfor %}

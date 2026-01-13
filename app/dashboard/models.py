@@ -205,6 +205,7 @@ class DailyRun(models.Model):
     ]
 
     site = models.ForeignKey(Site, on_delete=models.CASCADE, related_name='daily_runs')
+    run_number = models.PositiveIntegerField(default=0, help_text="Per-site run number (auto-incremented)")
     keyword_list = models.ForeignKey('KeywordList', on_delete=models.SET_NULL, null=True, blank=True, 
                                       help_text="Keyword list to use for article generation")
     target_count = models.IntegerField(help_text="Target number of articles to generate")
@@ -225,6 +226,15 @@ class DailyRun(models.Model):
         verbose_name = "Daily Run"
         verbose_name_plural = "Daily Runs"
         ordering = ['-created_at']
+        unique_together = ['site', 'run_number']  # Ensure unique per site
+
+    def save(self, *args, **kwargs):
+        # Auto-increment run_number per site on first save
+        if not self.pk and self.run_number == 0:
+            last_run = DailyRun.objects.filter(site=self.site).order_by('-run_number').first()
+            self.run_number = (last_run.run_number + 1) if last_run else 1
+        super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"Daily Run: {self.completed_count}/{self.target_count} ({self.get_status_display()})"
+        return f"Run #{self.run_number}: {self.completed_count}/{self.target_count} ({self.get_status_display()})"
+

@@ -1128,7 +1128,7 @@ def start_daily_run(request, site_id):
     # Check for active run
     active_run = site.daily_runs.filter(status='running').first()
     if active_run:
-        return redirect('dashboard:daily_run_status', site_id=site_id, run_id=active_run.id)
+        return redirect('dashboard:daily_run_status', site_id=site_id, run_id=active_run.run_number)
     
     # Get all keyword lists with site-specific article counts
     from .models import KeywordList, Article
@@ -1196,7 +1196,7 @@ def start_daily_run(request, site_id):
             process_daily_run.delay(run.id)
             
             messages.success(request, f'Daily run started! Target: {target_count} articles.')
-            return redirect('dashboard:daily_run_status', site_id=site_id, run_id=run.id)
+            return redirect('dashboard:daily_run_status', site_id=site_id, run_id=run.run_number)
             
         except ValueError:
             messages.error(request, 'Invalid target count')
@@ -1214,7 +1214,7 @@ def start_daily_run(request, site_id):
 def daily_run_status(request, site_id, run_id):
     """Monitor progress of a daily run."""
     site = get_object_or_404(Site, id=site_id)
-    run = get_object_or_404(DailyRun, id=run_id, site=site)
+    run = get_object_or_404(DailyRun, run_number=run_id, site=site)
     
     # Calculate progress percentage
     progress = 0
@@ -1250,7 +1250,7 @@ def daily_run_status(request, site_id, run_id):
 def pause_daily_run(request, site_id, run_id):
     """Pause a daily run (can be resumed later)."""
     site = get_object_or_404(Site, id=site_id)
-    run = get_object_or_404(DailyRun, id=run_id, site=site)
+    run = get_object_or_404(DailyRun, run_number=run_id, site=site)
     
     if run.status == 'running':
         run.status = 'paused'
@@ -1258,14 +1258,14 @@ def pause_daily_run(request, site_id, run_id):
         print(f"[PAUSE] Daily run {run.id} for site {site.domain} paused by user")
         messages.info(request, 'Daily run paused. New articles will not start. You can resume anytime.')
     
-    return redirect('dashboard:daily_run_status', site_id=site_id, run_id=run.id)
+    return redirect('dashboard:daily_run_status', site_id=site_id, run_id=run.run_number)
 
 
 @require_http_methods(["POST"])
 def resume_daily_run(request, site_id, run_id):
     """Resume a paused daily run."""
     site = get_object_or_404(Site, id=site_id)
-    run = get_object_or_404(DailyRun, id=run_id, site=site)
+    run = get_object_or_404(DailyRun, run_number=run_id, site=site)
     
     if run.status == 'paused':
         run.status = 'running'
@@ -1277,14 +1277,14 @@ def resume_daily_run(request, site_id, run_id):
         
         messages.success(request, 'Daily run resumed!')
     
-    return redirect('dashboard:daily_run_status', site_id=site_id, run_id=run.id)
+    return redirect('dashboard:daily_run_status', site_id=site_id, run_id=run.run_number)
 
 
 @require_http_methods(["POST"])
 def cancel_daily_run(request, site_id, run_id):
     """Cancel a daily run and FORCE KILL active tasks."""
     site = get_object_or_404(Site, id=site_id)
-    run = get_object_or_404(DailyRun, id=run_id, site=site)
+    run = get_object_or_404(DailyRun, run_number=run_id, site=site)
     
     if run.status in ['running', 'paused']:
         run.status = 'cancelled'
@@ -1312,7 +1312,7 @@ def cancel_daily_run(request, site_id, run_id):
                 
         messages.warning(request, f'Daily run cancelled. {killed_count} active tasks were terminated.')
     
-    return redirect('dashboard:daily_run_status', site_id=site_id, run_id=run.id)
+    return redirect('dashboard:daily_run_status', site_id=site_id, run_id=run.run_number)
 
 
 # Keep old name for backwards compatibility with existing URL
