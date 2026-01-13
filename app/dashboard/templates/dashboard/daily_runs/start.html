@@ -23,7 +23,7 @@
                             <select class="form-input" id="keyword_list" name="keyword_list" required>
                                 <option value="">-- Select a keyword list --</option>
                                 {% for kl in keyword_lists %}
-                                <option value="{{ kl.id }}">{{ kl.name }} ({{ kl.item_count }} H2 sets, {{ kl.pending_count }} pending)</option>
+                                <option value="{{ kl.id }}">{{ kl.name }} ({{ kl.remaining }}/{{ kl.total_keywords }} remaining for this site)</option>
                                 {% empty %}
                                 <option value="" disabled>No keyword lists available</option>
                                 {% endfor %}

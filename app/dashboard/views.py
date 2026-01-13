@@ -689,6 +689,14 @@ def write_articles(request, site_id):
     # Build preview data for template
     keyword_lists_data = []
     for kw_list in keyword_lists_qs:
+        # Count site-specific usage
+        site_articles_count = Article.objects.filter(
+            site=site,
+            keyword_list=kw_list
+        ).count()
+        total_keywords = kw_list.item_count or 0
+        remaining = max(0, total_keywords - site_articles_count)
+        
         items = []
         for i, item in enumerate(kw_list.keywords_json or []):
             if isinstance(item, dict) and 'h2s' in item:
@@ -699,6 +707,8 @@ def write_articles(request, site_id):
             'id': kw_list.id,
             'name': kw_list.name,
             'item_count': kw_list.item_count,
+            'remaining': remaining,
+            'site_articles': site_articles_count,
             'items': items
         })
     
@@ -1110,13 +1120,36 @@ def start_daily_run(request, site_id):
     if active_run:
         return redirect('dashboard:daily_run_status', site_id=site_id, run_id=active_run.id)
     
-    # Get all keyword lists with pending article count
+    # Get all keyword lists with site-specific article counts
     from .models import KeywordList, Article
     from django.db.models import Count, Q
-    keyword_lists = KeywordList.objects.annotate(
-        total_articles=Count('articles'),
-        pending_count=Count('articles', filter=Q(articles__status='pending'))
-    ).order_by('-created_at')
+    
+    # Fetch all keyword lists with their total keywords count
+    keyword_lists_raw = KeywordList.objects.all().order_by('-created_at')
+    
+    # Annotate with site-specific usage
+    keyword_lists = []
+    for kl in keyword_lists_raw:
+        # Count how many articles from this list exist for THIS site
+        site_articles_count = Article.objects.filter(
+            site=site,
+            keyword_list=kl
+        ).count()
+        
+        # Total keywords in the list
+        total_keywords = len(kl.keywords) if kl.keywords else 0
+        
+        # Remaining = total keywords - articles already created for this site
+        remaining = max(0, total_keywords - site_articles_count)
+        
+        keyword_lists.append({
+            'id': kl.id,
+            'name': kl.name,
+            'total_keywords': total_keywords,
+            'site_articles': site_articles_count,
+            'remaining': remaining,
+            'created_at': kl.created_at
+        })
         
     if request.method == 'POST':
         target_count = request.POST.get('target_count')
@@ -1186,12 +1219,20 @@ def daily_run_status(request, site_id, run_id):
         created_at__gte=run.started_at,
         status__in=['ready', 'published']
     ).order_by('-created_at')
+    
+    # Get logs only for this run (created after run started)
+    from .models import SiteLog
+    run_logs = SiteLog.objects.filter(
+        site=site,
+        created_at__gte=run.started_at
+    ).order_by('-created_at')[:10]
         
     return render(request, 'dashboard/daily_runs/status.html', {
         'site': site,
         'run': run,
         'progress': round(progress, 1),
-        'articles': articles
+        'articles': articles,
+        'run_logs': run_logs
     })
 
 

@@ -78,7 +78,7 @@
                 <div class="table-responsive">
                     <table class="table mb-0">
                         <tbody>
-                            {% for log in site.logs.all|slice:":5" %}
+                            {% for log in run_logs %}
                             <tr>
                                 <td style="width: 100px" class="text-muted small">{{ log.created_at|date:"H:i:s" }}</td>
                                 <td>

@@ -24,7 +24,7 @@
                     <option value="">-- Choose a list --</option>
                     {% for list in keyword_lists %}
                     <option value="{{ list.id }}" data-items='{{ list.items|safe }}'>
-                        {{ list.name }} ({{ list.item_count }} articles)
+                        {{ list.name }} ({{ list.remaining }}/{{ list.item_count }} remaining for this site)
                     </option>
                     {% endfor %}
                 </select>
