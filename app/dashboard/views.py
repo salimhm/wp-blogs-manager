@@ -636,6 +636,7 @@ def write_articles(request, site_id):
     """Start article generation from a keyword list."""
     site = get_object_or_404(Site, id=site_id)
     keyword_lists_qs = KeywordList.objects.all()
+    print(f"[DEBUG] write_articles: Found {keyword_lists_qs.count()} keyword lists")
     
     # Check if site has Groq API key
     has_groq_key = site.api_keys.filter(provider='groq', is_active=True).exists()
