@@ -439,17 +439,37 @@ def get_cloudflare_zones(api_token: str) -> Tuple[bool, list]:
         'Content-Type': 'application/json'
     }
     
+    all_zones = []
+    page = 1
+    per_page = 50  # Max allowed by Cloudflare
+    
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        result = response.json()
-        
-        if result.get('success'):
+        while True:
+            params = {'page': page, 'per_page': per_page}
+            response = requests.get(url, headers=headers, params=params, timeout=15)
+            result = response.json()
+            
+            if not result.get('success'):
+                if all_zones:  # Return what we have if some pages succeeded
+                    return True, all_zones
+                return False, []
+            
             zones = [{'id': z['id'], 'name': z['name']} for z in result.get('result', [])]
-            return True, zones
-        else:
-            return False, []
+            all_zones.extend(zones)
+            
+            # Check if there are more pages
+            result_info = result.get('result_info', {})
+            total_pages = result_info.get('total_pages', 1)
+            
+            if page >= total_pages:
+                break
+            page += 1
+        
+        return True, all_zones
             
     except Exception:
+        if all_zones:  # Return what we have on error
+            return True, all_zones
         return False, []
 
 
