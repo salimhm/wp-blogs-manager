@@ -652,35 +652,11 @@ def write_articles(request, site_id):
         try:
             kw_list = get_object_or_404(KeywordList, id=list_id)
             
-            # Create pending articles for selected or all H2 sets
-            created = 0
-            for index, item in enumerate(kw_list.keywords_json):
-                # If specific indices selected, only create those
-                if selected_indices and str(index) not in selected_indices:
-                    continue
-                    
-                if isinstance(item, dict) and 'h2s' in item:
-                    # Check if article already exists for this index
-                    exists = Article.objects.filter(
-                        site=site, 
-                        keyword_list=kw_list, 
-                        keyword_index=index
-                    ).exists()
-                    
-                    if not exists:
-                        Article.objects.create(
-                            site=site,
-                            keyword_list=kw_list,
-                            keyword_index=index,
-                            status='pending'
-                        )
-                        created += 1
+            # Offload to Celery to prevent timeout
+            from .tasks import create_pending_articles_task
+            create_pending_articles_task.delay(site_id, int(list_id), selected_indices or None)
             
-            if created > 0:
-                messages.success(request, f'Created {created} pending articles.')
-            else:
-                messages.info(request, 'No new articles created (may already exist).')
-                
+            messages.success(request, f'Creating pending articles from "{kw_list.name}" in background. Check logs for progress.')
             return redirect('dashboard:article_list', site_id=site_id)
             
         except Exception as e:

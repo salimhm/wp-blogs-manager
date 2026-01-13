@@ -190,10 +190,21 @@ def generate_single_article(self, article_id, run_id=None):
 
         # 2. Get keywords (H2s) - extract from dict structure
         h2_data = article.keyword_list.keywords_json[article.keyword_index]
-        h2s = h2_data.get('h2s', []) if isinstance(h2_data, dict) else h2_data
+        print(f"[DEBUG] h2_data type: {type(h2_data)}, value preview: {str(h2_data)[:100]}")
+        
+        # Handle different formats
+        if isinstance(h2_data, dict) and 'h2s' in h2_data:
+            h2s = h2_data['h2s']
+        elif isinstance(h2_data, list):
+            h2s = h2_data
+        elif isinstance(h2_data, str):
+            # Single keyword string - wrap in list
+            h2s = [h2_data]
+        else:
+            h2s = []
         
         if not h2s:
-            raise Exception("No H2s found in keyword data")
+            raise Exception(f"No H2s found in keyword data. Type: {type(h2_data)}")
         
         # 3. Generate Content with cross-provider fallback
         content_data = generate_article_content(h2s, api_keys, proxy_dict)
@@ -290,3 +301,55 @@ def generate_single_article(self, article_id, run_id=None):
             message=f"Failed: {article.title[:50]}...",
             details={'article_id': article_id, 'error': str(e)}
         )
+
+
+@shared_task
+def create_pending_articles_task(site_id, keyword_list_id, selected_indices=None):
+    """
+    Background task to create pending articles from a keyword list.
+    This prevents timeout when creating many articles.
+    """
+    from .models import Site, KeywordList, Article, SiteLog
+    
+    try:
+        site = Site.objects.get(id=site_id)
+        kw_list = KeywordList.objects.get(id=keyword_list_id)
+    except (Site.DoesNotExist, KeywordList.DoesNotExist) as e:
+        return f"Error: {str(e)}"
+    
+    created = 0
+    skipped = 0
+    
+    for index, item in enumerate(kw_list.keywords_json):
+        # If specific indices selected, only create those
+        if selected_indices and str(index) not in selected_indices:
+            continue
+        
+        # Check if article already exists for this index
+        exists = Article.objects.filter(
+            site=site,
+            keyword_list=kw_list,
+            keyword_index=index
+        ).exists()
+        
+        if not exists:
+            Article.objects.create(
+                site=site,
+                keyword_list=kw_list,
+                keyword_index=index,
+                status='pending'
+            )
+            created += 1
+        else:
+            skipped += 1
+    
+    # Log completion
+    SiteLog.objects.create(
+        site=site,
+        level='info',
+        source='system',
+        message=f"Created {created} pending articles from '{kw_list.name}' ({skipped} already existed)"
+    )
+    
+    return f"Created {created} pending articles, skipped {skipped} existing"
+
