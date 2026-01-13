@@ -704,13 +704,18 @@ def write_articles(request, site_id):
                 h2s = item.get('h2s', [])
                 preview = h2s[0][:50] + '...' if h2s and len(h2s[0]) > 50 else (h2s[0] if h2s else 'No H2s')
                 items.append({'index': i, 'preview': preview, 'count': len(h2s)})
+        
+        # JSON encode items for safe HTML embedding (limit to first 100 for UI)
+        import json
+        items_json = json.dumps(items[:100])
+        
         keyword_lists_data.append({
             'id': kw_list.id,
             'name': kw_list.name,
             'item_count': kw_list.item_count,
             'remaining': remaining,
             'site_articles': site_articles_count,
-            'items': items
+            'items': items_json  # Now a JSON string
         })
     
     print(f"[DEBUG] keyword_lists_data: {keyword_lists_data}")

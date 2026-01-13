@@ -23,7 +23,7 @@
                 <select name="keyword_list" id="keywordListSelect" class="form-select" required onchange="showItems()">
                     <option value="">-- Choose a list --</option>
                     {% for list in keyword_lists %}
-                    <option value="{{ list.id }}" data-items='{{ list.items|safe }}'>
+                    <option value="{{ list.id }}" data-items="{{ list.items|escapejs }}">
                         {{ list.name }} ({{ list.remaining }}/{{ list.item_count }} remaining for this site)
                     </option>
                     {% endfor %}
@@ -72,7 +72,7 @@ function showItems() {
     let items = [];
     try {
         const itemsStr = option.getAttribute('data-items');
-        items = JSON.parse(itemsStr.replace(/'/g, '"')) || [];
+        items = JSON.parse(itemsStr) || [];
     } catch(e) {
         console.error('Parse error:', e);
         items = [];
