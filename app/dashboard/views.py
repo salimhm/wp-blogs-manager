@@ -718,7 +718,15 @@ def article_detail(request, site_id, article_id):
     if article.keyword_list and article.keyword_index is not None:
         try:
             h2_data = article.keyword_list.keywords_json[article.keyword_index]
-            h2s = h2_data.get('h2s', []) if isinstance(h2_data, dict) else h2_data
+            # Handle different formats
+            if isinstance(h2_data, dict) and 'h2s' in h2_data:
+                h2s = h2_data['h2s']
+            elif isinstance(h2_data, list):
+                h2s = h2_data
+            elif isinstance(h2_data, str):
+                h2s = [h2_data]
+            else:
+                h2s = []
         except (IndexError, KeyError, TypeError):
             pass
     
@@ -972,7 +980,15 @@ def api_bulk_generate_articles(request):
                 continue
             
             h2_data = kw_list.keywords_json[article.keyword_index]
-            h2s = h2_data.get('h2s', [])
+            # Handle different formats
+            if isinstance(h2_data, dict) and 'h2s' in h2_data:
+                h2s = h2_data['h2s']
+            elif isinstance(h2_data, list):
+                h2s = h2_data
+            elif isinstance(h2_data, str):
+                h2s = [h2_data]
+            else:
+                h2s = []
             
             if not h2s:
                 failed += 1
