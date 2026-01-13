@@ -14,20 +14,20 @@
                         {{ run.get_status_display }}
                     </span>
                     {% if run.status == 'running' %}
-                    <form method="post" action="{% url 'dashboard:pause_daily_run' site.id run.id %}" style="margin:0; display:inline;">
+                    <form method="post" action="{% url 'dashboard:pause_daily_run' site.id run.run_number %}" style="margin:0; display:inline;">
                         {% csrf_token %}
                         <button type="submit" class="btn btn-sm btn-warning" title="Pause - can resume later">⏸ Pause</button>
                     </form>
-                    <form method="post" action="{% url 'dashboard:cancel_daily_run' site.id run.id %}" onsubmit="return confirm('Cancel and terminate all active tasks?');" style="margin:0; display:inline;">
+                    <form method="post" action="{% url 'dashboard:cancel_daily_run' site.id run.run_number %}" onsubmit="return confirm('Cancel and terminate all active tasks?');" style="margin:0; display:inline;">
                         {% csrf_token %}
                         <button type="submit" class="btn btn-sm btn-danger" title="Cancel and force-kill active tasks">✕ Cancel</button>
                     </form>
                     {% elif run.status == 'paused' %}
-                    <form method="post" action="{% url 'dashboard:resume_daily_run' site.id run.id %}" style="margin:0; display:inline;">
+                    <form method="post" action="{% url 'dashboard:resume_daily_run' site.id run.run_number %}" style="margin:0; display:inline;">
                         {% csrf_token %}
                         <button type="submit" class="btn btn-sm btn-success" title="Resume processing">▶ Resume</button>
                     </form>
-                    <form method="post" action="{% url 'dashboard:cancel_daily_run' site.id run.id %}" onsubmit="return confirm('Cancel this run permanently?');" style="margin:0; display:inline;">
+                    <form method="post" action="{% url 'dashboard:cancel_daily_run' site.id run.run_number %}" onsubmit="return confirm('Cancel this run permanently?');" style="margin:0; display:inline;">
                         {% csrf_token %}
                         <button type="submit" class="btn btn-sm btn-danger" title="Cancel permanently">✕ Cancel</button>
                     </form>
