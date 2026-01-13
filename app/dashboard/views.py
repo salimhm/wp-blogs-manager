@@ -316,7 +316,8 @@ def delete_api_key(request, site_id, key_id):
 def proxy_list(request):
     """List all proxies for all sites."""
     proxies = ProxySettings.objects.select_related('site').all().order_by('site__domain', '-created_at')
-    return render(request, 'dashboard/proxies/list.html', {'proxies': proxies})
+    sites = Site.objects.all().order_by('domain')
+    return render(request, 'dashboard/proxies/list.html', {'proxies': proxies, 'sites': sites})
 
 
 @require_http_methods(["GET", "POST"])
