@@ -1136,8 +1136,8 @@ def start_daily_run(request, site_id):
             keyword_list=kl
         ).count()
         
-        # Total keywords in the list
-        total_keywords = len(kl.keywords) if kl.keywords else 0
+        # Total keywords in the list (use item_count field)
+        total_keywords = kl.item_count or 0
         
         # Remaining = total keywords - articles already created for this site
         remaining = max(0, total_keywords - site_articles_count)
