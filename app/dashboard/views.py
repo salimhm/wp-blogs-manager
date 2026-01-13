@@ -817,10 +817,19 @@ def api_generate_article(request):
             return JsonResponse({'success': False, 'message': 'Invalid keyword data'})
         
         h2_data = kw_list.keywords_json[article.keyword_index]
-        h2s = h2_data.get('h2s', [])
+        
+        # Handle different formats (dict with 'h2s' key, list, or string)
+        if isinstance(h2_data, dict) and 'h2s' in h2_data:
+            h2s = h2_data['h2s']
+        elif isinstance(h2_data, list):
+            h2s = h2_data
+        elif isinstance(h2_data, str):
+            h2s = [h2_data]
+        else:
+            h2s = []
         
         if not h2s:
-            return JsonResponse({'success': False, 'message': 'No H2s found'})
+            return JsonResponse({'success': False, 'message': f'No H2s found. Data type: {type(h2_data).__name__}'})
         
         # Generate article with retry logic
         from .utils import generate_article_content
