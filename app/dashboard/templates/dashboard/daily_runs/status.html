@@ -124,8 +124,8 @@
                                         {{ article.status }}
                                     </span>
                                 </td>
-                                <td class="text-muted small">{{ article.created_at|date:"H:i" }}</td>
-                                <td class="text-muted small">{{ article.updated_at|date:"H:i" }}</td>
+                                <td class="text-muted small">{{ article.created_at|date:"M d H:i" }}</td>
+                                <td class="text-muted small">{{ article.updated_at|date:"M d H:i" }}</td>
                             </tr>
                             {% empty %}
                             <tr><td colspan="4" class="text-center py-4 text-muted">No articles yet</td></tr>

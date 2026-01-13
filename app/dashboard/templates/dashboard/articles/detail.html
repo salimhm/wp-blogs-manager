@@ -36,6 +36,13 @@
         <button id="generateBtn" class="btn btn-primary" onclick="generateArticle()">
             🔄 Retry Generation
         </button>
+        {% if article.content_html %}
+        <hr style="margin: 24px 0; border-color: rgba(255,255,255,0.1);">
+        <form method="post" action="{% url 'dashboard:publish_article' site.id article.id %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-success">📤 Publish Existing Content to WordPress</button>
+        </form>
+        {% endif %}
         <div id="generateResult" class="proxy-result hidden" style="margin-top: 16px;"></div>
         
         {% else %}
