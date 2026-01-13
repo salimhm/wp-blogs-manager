@@ -713,6 +713,8 @@ def write_articles(request, site_id):
             'items': items
         })
     
+    print(f"[DEBUG] keyword_lists_data: {keyword_lists_data}")
+    
     return render(request, 'dashboard/articles/write.html', {
         'site': site,
         'keyword_lists': keyword_lists_data,
