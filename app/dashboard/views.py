@@ -805,9 +805,12 @@ def api_generate_article(request):
         site = article.site
         
         # Get Groq API key from site
-        api_key_obj = site.api_keys.filter(provider='groq', is_active=True).first()
-        if not api_key_obj:
-            return JsonResponse({'success': False, 'message': 'No Groq API key configured for this site'})
+        api_keys_objs = site.api_keys.filter(is_active=True)
+        if not api_keys_objs.exists():
+            return JsonResponse({'success': False, 'message': 'No API keys configured for this site'})
+        
+        # Build api_keys list in correct format for generate_article_content
+        api_keys = [{'provider': k.provider, 'api_key': k.api_key, 'is_active': k.is_active} for k in api_keys_objs]
         
         # Get proxy from site (if configured)
         proxy = None
@@ -852,7 +855,7 @@ def api_generate_article(request):
         
         for attempt in range(max_retries):
             try:
-                result = generate_article_content(h2s, api_key_obj.api_key, proxy=proxy)
+                result = generate_article_content(h2s, api_keys, proxy=proxy)
                 
                 article.title = result['title']
                 article.introduction = result['introduction']
