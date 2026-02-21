@@ -821,7 +821,7 @@ CRITICAL INSTRUCTIONS:
             faq_idx = 0
             for heading, content in faq.items():
                 html_parts.append('<div class="faq-item">')
-                html_parts.append(f'<h3 class="faq-question">{str(heading)}</h3>')
+                html_parts.append(f'<h2 class="faq-question">{str(heading)}</h2>')
                 html_parts.append('<div class="faq-answer">')
                 paragraphs = [p.strip() for p in str(content).split('\n') if p.strip()]
                 for p in paragraphs:
