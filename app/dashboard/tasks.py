@@ -2,7 +2,7 @@ import datetime
 from celery import shared_task
 from django.utils import timezone
 from .models import DailyRun, Article, APIKey, ProxySettings, Site, SiteLog, KeywordList
-from .utils import generate_article_content, publish_to_wordpress, ensure_complete
+from .utils import generate_article_content, publish_to_wordpress
 
 @shared_task
 def process_daily_run(run_id):
