@@ -538,855 +538,316 @@ def search_youtube(query: str, max_results: int = 2) -> list:
 
 
 # ============================================
-# SambaNova LLM Integration
+# Groq LLM Integration (Optimized & Rate-Limited)
 # ============================================
 
 import time
 import re
+import json
 
-# SambaNova text generation models
-# Removed deprecated models (Llama 3.1-405B/70B, Qwen 72B)
-SAMBANOVA_MODELS = [
-    'Meta-Llama-3.3-70B-Instruct',
-    'Meta-Llama-3.1-8B-Instruct', 
-    # 'Qwen2.5-Coder-32B-Instruct',
-    # 'QwQ-32B-Preview',
-    'Llama-3.2-90B-Vision-Instruct',
-    'Llama-3.2-11B-Vision-Instruct',
-]
-
-# Track when a model will be available again
-SAMBANOVA_COOLDOWNS = {}
-_sambanova_model_index = 0
-
-
-def get_next_sambanova_model() -> Optional[str]:
-    """Get next available SambaNova model in rotation."""
-    global _sambanova_model_index
-    now = time.time()
-    
-    attempts = 0
-    while attempts < len(SAMBANOVA_MODELS):
-        model = SAMBANOVA_MODELS[_sambanova_model_index % len(SAMBANOVA_MODELS)]
-        cooldown_expiry = SAMBANOVA_COOLDOWNS.get(model, 0)
-        
-        if now >= cooldown_expiry:
-            _sambanova_model_index += 1
-            return model
-            
-        _sambanova_model_index += 1
-        attempts += 1
-    
-    return None
-
-
-def call_sambanova(api_key: str, prompt: str, max_tokens: int = 4096, proxy: Optional[dict] = None) -> str:
-    """
-    Call SambaNova API with smart model rotation and rate limit handling.
-    Uses OpenAI-compatible endpoint.
-    """
-    max_attempts = len(SAMBANOVA_MODELS) * 2
-    attempts = 0
-    
-    while attempts < max_attempts:
-        attempts += 1
-        model = get_next_sambanova_model()
-        
-        if not model:
-            wait_times = [t - time.time() for t in SAMBANOVA_COOLDOWNS.values() if t > time.time()]
-            min_wait = min(wait_times) if wait_times else 5
-            raise Exception(f"All SambaNova models rate limited. Please wait {int(min_wait)} seconds.")
-
-        url = "https://api.sambanova.ai/v1/chat/completions"
-        headers = {
-            'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json'
-        }
-        
-        system_prompt = """You are a professional content writer. Follow these rules STRICTLY:
-1. Write ONLY the requested content - no introductions like "Here is..." or "Sure, I can..."
-2. Do NOT include any meta-commentary or instructions
-3. Do NOT use markdown formatting (no **, ##, etc.)
-4. Write in plain, natural prose
-5. Be informative, engaging, and professional
-6. Never mention that you are an AI or that this is generated content"""
-        
-        data = {
-            'model': model,
-            'messages': [
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': prompt}
-            ],
-            'max_tokens': max_tokens,
-            'temperature': 0.7,
-        }
-        
-        proxies = proxy if proxy else None
-        
-        try:
-            proxy_info = f"via {list(proxies.values())[0][:30]}..." if proxies else "DIRECT (no proxy)"
-            print(f"[LLM REQUEST] SambaNova/{model} - {proxy_info}")
-            response = requests.post(url, json=data, headers=headers, timeout=180, proxies=proxies)
-            
-            if response.status_code == 200:
-                result = response.json()
-                content = result['choices'][0]['message']['content']
-                
-                # Cleanup
-                content = content.strip()
-                prefixes_to_remove = [
-                    "Here is", "Here's", "Sure,", "Certainly,", "Of course,",
-                    "Here are", "Below is", "The following"
-                ]
-                for prefix in prefixes_to_remove:
-                    if content.lower().startswith(prefix.lower()):
-                        idx = content.find('\n')
-                        if idx != -1 and idx < 100:
-                            content = content[idx:].strip()
-                return content
-                
-            # Handle rate limits
-            if response.status_code == 429 or response.status_code == 503:
-                error_body = response.json() if response.text else {}
-                error_msg = error_body.get('error', {}).get('message', str(response.text))
-                
-                wait_time = 60  # Default 1 minute
-                
-                if 'Retry-After' in response.headers:
-                    try:
-                        wait_time = int(response.headers['Retry-After'])
-                    except:
-                        pass
-                
-                SAMBANOVA_COOLDOWNS[model] = time.time() + wait_time
-                print(f"SambaNova model {model} rate limited. Cooldown: {wait_time:.1f}s")
-                continue
-            
-            response.raise_for_status()
-            
-        except requests.exceptions.RequestException as e:
-            print(f"SambaNova request failed for {model}: {e}")
-            continue
-
-    raise Exception("Failed to generate content after trying multiple SambaNova models.")
-
-
-# ============================================
-# Groq LLM Integration
-# ============================================
-
-# Models for rotation (to avoid rate limits)
-import time
-import re
-
-# Models for rotation (to avoid rate limits)
 GROQ_MODELS = [
     'llama-3.3-70b-versatile',
-    # 'moonshotai/kimi-k2-instruct',
-    # 'moonshotai/kimi-k2-instruct-0905',
     'llama-3.1-8b-instant',
-    'openai/gpt-oss-120b',
-    'openai/gpt-oss-20b',
 ]
 
-# Track when a model will be available again
-# Format: {'model_name': timestamp_when_available}
-MODEL_COOLDOWNS = {}
+# Track when an API key + model will be available again
+# Format: { ('api_key', 'model_name'): timestamp_when_available }
+API_KEY_MODEL_COOLDOWNS = {}
 
-_model_index = 0
+def get_cooldown(api_key: str, model: str) -> float:
+    return max(0, API_KEY_MODEL_COOLDOWNS.get((api_key, model), 0) - time.time())
 
-def get_next_model() -> Optional[str]:
+def set_cooldown(api_key: str, model: str, wait_time: float):
+    API_KEY_MODEL_COOLDOWNS[(api_key, model)] = time.time() + wait_time
+
+def _clean_llm_content(content: str) -> str:
+    content = content.strip()
+    prefixes = ["Here is", "Here's", "Sure,", "Certainly,", "Of course,", "Here are", "Below is", "The following"]
+    for p in prefixes:
+        if content.lower().startswith(p.lower()):
+            idx = content.find('\n')
+            if idx != -1 and idx < 100:
+                content = content[idx:].strip()
+    return content
+
+def call_groq_with_fallback(api_keys: list, prompt: str, max_tokens: int = 8000, proxy: Optional[dict] = None) -> tuple[str, dict]:
     """
-    Get next available model in rotation.
-    Returns None if all models are on cooldown.
+    Call Groq API with robust multi-key, multi-model fallback and strict rate-limit handling.
+    Creates a new connection per request to ensure rotating proxies assign a new IP.
     """
-    global _model_index
-    now = time.time()
+    max_retries = len(api_keys) * len(GROQ_MODELS) * 2
     
-    # Try finding an available model
-    start_index = _model_index
-    attempts = 0
-    
-    while attempts < len(GROQ_MODELS):
-        model = GROQ_MODELS[_model_index % len(GROQ_MODELS)]
-        cooldown_expiry = MODEL_COOLDOWNS.get(model, 0)
-        
-        if now >= cooldown_expiry:
-            _model_index += 1
-            return model
-            
-        _model_index += 1
-        attempts += 1
-    
-    return None
-
-
-def call_groq(api_key: str, prompt: str, max_tokens: int = 4096, proxy: Optional[dict] = None) -> str:
-    """
-    Call Groq API with smart model rotation and rate limit handling.
-    """
-    # Max retries effectively becomes traversing the model list
-    max_attempts = len(GROQ_MODELS) * 2  # Allow for some second chances
-    attempts = 0
-    
-    while attempts < max_attempts:
-        attempts += 1
-        model = get_next_model()
-        
-        if not model:
-            # All models on cooldown
-            wait_times = [t - time.time() for t in MODEL_COOLDOWNS.values() if t > time.time()]
-            min_wait = min(wait_times) if wait_times else 5
-            raise Exception(f"All models rate limited. Please wait {int(min_wait)} seconds.")
-
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        headers = {
-            'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json'
-        }
-        
-        system_prompt = """You are a professional content writer. Follow these rules STRICTLY:
-1. Write ONLY the requested content - no introductions like "Here is..." or "Sure, I can..."
-2. Do NOT include any meta-commentary or instructions
-3. Do NOT use markdown formatting (no **, ##, etc.)
-4. Write in plain, natural prose
-5. Be informative, engaging, and professional
-6. Never mention that you are an AI or that this is generated content"""
-        
-        data = {
-            'model': model,
-            'messages': [
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': prompt}
-            ],
-            'max_tokens': max_tokens,
-            'temperature': 0.7,
-            'presence_penalty': 0.6,
-            'frequency_penalty': 0.1
-        }
-        
-        proxies = proxy if proxy else None
-        
-        try:
-            proxy_info = f"via {list(proxies.values())[0][:30]}..." if proxies else "DIRECT (no proxy)"
-            print(f"[LLM REQUEST] Groq/{model} - {proxy_info}")
-            response = requests.post(url, json=data, headers=headers, timeout=160, proxies=proxies)
-            
-            # Handle success
-            if response.status_code == 200:
-                result = response.json()
-                content = result['choices'][0]['message']['content']
-                
-                # Cleanup
-                content = content.strip()
-                prefixes_to_remove = [
-                    "Here is", "Here's", "Sure,", "Certainly,", "Of course,",
-                    "Here are", "Below is", "The following"
-                ]
-                for prefix in prefixes_to_remove:
-                    if content.lower().startswith(prefix.lower()):
-                        idx = content.find('\n')
-                        if idx != -1 and idx < 100:
-                            content = content[idx:].strip()
-                return content
-                
-            # Handle rate limits
-            if response.status_code == 429 or response.status_code == 503:
-                error_body = response.json() if response.text else {}
-                error_msg = error_body.get('error', {}).get('message', str(response.text))
-                
-                # Calculate wait time
-                wait_time = 60  # Default 1 minute
-                
-                # Check Retry-After header
-                if 'Retry-After' in response.headers:
-                    try:
-                        wait_time = int(response.headers['Retry-After'])
-                    except:
-                        pass
-                
-                # Parse message for time (e.g., "try again in 3m21s")
-                match = re.search(r'try again in (\d+m)?(\d+(\.\d+)?)s', error_msg)
-                if match:
-                    minutes = int(match.group(1).replace('m', '')) if match.group(1) else 0
-                    seconds = float(match.group(2))
-                    wait_time = (minutes * 60) + seconds + 1 # Add buffer
-                
-                # Mark this specific model as rate limited
-                MODEL_COOLDOWNS[model] = time.time() + wait_time
-                print(f"Model {model} rate limited. Cooldown: {wait_time:.1f}s")
-                continue # Try next model
-            
-            response.raise_for_status()
-            
-        except requests.exceptions.RequestException as e:
-            # For network-level errors, we might want to retry differently, 
-            # but for now, let's treat it as a model failure and try another if available
-            print(f"Request failed for {model}: {e}")
-            continue
-
-    raise Exception("Failed to generate content after trying multiple models.")
-
-# ============================================
-# Cerebras LLM Integration
-# ============================================
-
-# Cerebras models
-CEREBRAS_MODELS = [
-    'llama-3.3-70b',
-    'llama3.1-8b',
-	'gpt-oss-120b',
-]
-
-CEREBRAS_COOLDOWNS = {}
-_cerebras_model_index = 0
-
-def get_next_cerebras_model() -> Optional[str]:
-    """Get next available Cerebras model in rotation."""
-    global _cerebras_model_index
-    now = time.time()
-    
-    attempts = 0
-    while attempts < len(CEREBRAS_MODELS):
-        model = CEREBRAS_MODELS[_cerebras_model_index % len(CEREBRAS_MODELS)]
-        cooldown_expiry = CEREBRAS_COOLDOWNS.get(model, 0)
-        
-        if now >= cooldown_expiry:
-            _cerebras_model_index += 1
-            return model
-            
-        _cerebras_model_index += 1
-        attempts += 1
-    
-    return None
-
-def call_cerebras(api_key: str, prompt: str, max_tokens: int = 4096, proxy: Optional[dict] = None) -> str:
-    """
-    Call Cerebras API.
-    """
-    max_attempts = len(CEREBRAS_MODELS) * 2
-    attempts = 0
-    
-    while attempts < max_attempts:
-        attempts += 1
-        model = get_next_cerebras_model()
-        
-        if not model:
-            wait_times = [t - time.time() for t in CEREBRAS_COOLDOWNS.values() if t > time.time()]
-            min_wait = min(wait_times) if wait_times else 5
-            raise Exception(f"All Cerebras models rate limited. Please wait {int(min_wait)} seconds.")
-
-        url = "https://api.cerebras.ai/v1/chat/completions"
-        headers = {
-            'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json'
-        }
-        
-        system_prompt = """You are a professional content writer. Follow these rules STRICTLY:
-1. Write ONLY the requested content - no introductions like "Here is..." or "Sure, I can..."
-2. No meta-commentary
-3. No markdown formatting
-4. Plain, natural prose
-5. Informative and professional"""
-        
-        data = {
-            'model': model,
-            'messages': [
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': prompt}
-            ],
-            'max_tokens': max_tokens,
-            'temperature': 0.7,
-        }
-        
-        proxies = proxy if proxy else None
-        
-        try:
-            proxy_info = f"via {list(proxies.values())[0][:30]}..." if proxies else "DIRECT (no proxy)"
-            print(f"[LLM REQUEST] Cerebras/{model} - {proxy_info}")
-            response = requests.post(url, json=data, headers=headers, timeout=120, proxies=proxies)
-            
-            if response.status_code == 200:
-                result = response.json()
-                content = result['choices'][0]['message']['content']
-                return content.strip()
-                
-            if response.status_code == 429 or response.status_code == 503:
-                wait_time = 60
-                if 'Retry-After' in response.headers:
-                    try:
-                        wait_time = int(response.headers['Retry-After'])
-                    except:
-                        pass
-                
-                CEREBRAS_COOLDOWNS[model] = time.time() + wait_time
-                print(f"Cerebras model {model} rate limited. Cooldown: {wait_time:.1f}s")
-                continue
-            
-            response.raise_for_status()
-            
-        except requests.exceptions.RequestException as e:
-            print(f"Cerebras request failed for {model}: {e}")
-            continue
-
-    raise Exception("Failed to generate content after trying multiple Cerebras models.")
-
-
-# ============================================
-# Unified LLM Interface with Cross-Provider Fallback
-# ============================================
-
-def call_llm(api_key: str, prompt: str, max_tokens: int = 4096, proxy: Optional[dict] = None, provider: str = 'sambanova') -> str:
-    """
-    Call a single provider's LLM. Routes to provider-specific implementations.
-    """
-    if provider == 'sambanova':
-        return call_sambanova(api_key, prompt, max_tokens, proxy)
-    elif provider == 'groq':
-        return call_groq(api_key, prompt, max_tokens, proxy)
-    elif provider == 'cerebras':
-        return call_cerebras(api_key, prompt, max_tokens, proxy)
-    else:
-        raise ValueError(f"Unsupported LLM provider: {provider}")
-
-
-def call_llm_with_fallback(api_keys: list, prompt: str, max_tokens: int = 4096, proxy: Optional[dict] = None) -> tuple[str, dict]:
-    """
-    Call LLM with automatic cross-provider fallback.
-    Tries all available providers until one succeeds.
-    
-    Args:
-        api_keys: List of dicts [{'provider': 'sambanova', 'api_key': '...', 'is_active': True}, ...]
-        prompt: The prompt to send
-        max_tokens: Maximum tokens to generate
-        proxy: Optional proxy dict
-        
-    Returns: Tuple (content, metadata_dict) where metadata contains 'provider' and 'model'
-    """
-    
-    max_retries = 3
     for retry in range(max_retries):
         errors = []
         
-        # Sort keys by priority if needed, for now use order provided
         for config in api_keys:
-            if not config.get('is_active'):
+            if not config.get('is_active') or config.get('provider') != 'groq':
                 continue
                 
-            provider = config['provider']
             api_key = config['api_key']
             
-            try:
-                content = call_llm(api_key, prompt, max_tokens, proxy, provider)
+            for model in GROQ_MODELS:
+                if get_cooldown(api_key, model) > 0:
+                    continue
                 
-                meta = {
-                    'provider': provider,
-                    'model': 'auto-rotated',
-                    'timestamp': time.time()
+                url = "https://api.groq.com/openai/v1/chat/completions"
+                headers = {
+                    'Authorization': f'Bearer {api_key}',
+                    'Content-Type': 'application/json',
+                    'Accept-Encoding': 'gzip, deflate'  # Compress bandwidth significantly
                 }
-                return content, meta
+                system_prompt = "You are a professional content writer. Write plain, natural prose. Output valid json if requested."
                 
-            except Exception as e:
-                print(f"Provider {provider} failed: {e}")
-                errors.append(f"{provider}: {str(e)}")
-                continue
+                data = {
+                    'model': model,
+                    'messages': [
+                        {'role': 'system', 'content': system_prompt},
+                        {'role': 'user', 'content': prompt}
+                    ],
+                    'max_tokens': max_tokens,
+                    'temperature': 0.7,
+                    'presence_penalty': 0.6,
+                    'frequency_penalty': 0.1,
+                    'response_format': {"type": "json_object"}
+                }
+                
+                # We use a new session/request each time (requests.post) to ensure proxy IP rotation happens dynamically.
+                try:
+                    proxy_info = f"via {list(proxy.values())[0][:30]}..." if proxy else "DIRECT"
+                    print(f"[LLM REQUEST] Groq/{model} [Key ending in {api_key[-4:]}] - {proxy_info}")
+                    
+                    response = requests.post(url, json=data, headers=headers, timeout=160, proxies=proxy)
+                    
+                    if response.status_code == 200:
+                        try:
+                            resp_json = response.json()
+                        except ValueError:
+                            print(f"Proxy returned 200 but invalid JSON: {response.text[:100]}...")
+                            errors.append(f"Proxy/JSON Error")
+                            continue
+                            
+                        content = _clean_llm_content(resp_json['choices'][0]['message']['content'])
+                        bytes_received = len(response.content)
+                        usage = resp_json.get('usage', {})
+                        meta = {
+                            'provider': 'groq',
+                            'model': model,
+                            'timestamp': time.time(),
+                            'bytes_received': bytes_received,
+                            'prompt_tokens': usage.get('prompt_tokens', 0),
+                            'completion_tokens': usage.get('completion_tokens', 0)
+                        }
+                        return content, meta
+                        
+                    if response.status_code in (429, 503):
+                        # Handle strict rate limits based on Groq headers
+                        wait_time = 60
+                        if 'retry-after' in response.headers:
+                            try: wait_time = float(response.headers['retry-after'])
+                            except: pass
+                        elif 'x-ratelimit-reset-tokens' in response.headers:
+                            try:
+                                val = response.headers['x-ratelimit-reset-tokens']
+                                match = re.search(r'(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?', val)
+                                if match:
+                                    m = int(match.group(1)) if match.group(1) else 0
+                                    s = float(match.group(2)) if match.group(2) else 0
+                                    wait_time = max(wait_time, m * 60 + s)
+                            except: pass
+                        elif 'x-ratelimit-reset-requests' in response.headers:
+                            try:
+                                val = response.headers['x-ratelimit-reset-requests']
+                                match = re.search(r'(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?', val)
+                                if match:
+                                    m = int(match.group(1)) if match.group(1) else 0
+                                    s = float(match.group(2)) if match.group(2) else 0
+                                    wait_time = max(wait_time, m * 60 + s)
+                            except: pass
+                        
+                        set_cooldown(api_key, model, wait_time + 1)
+                        print(f"Groq API Key {api_key[-4:]} with {model} rate limited. Cooldown: {wait_time:.1f}s")
+                        continue
+                        
+                    # If we get here, it's a non-200 and non-rate-limit error
+                    print(f"Groq returned {response.status_code}: {response.text}")
+                    response.raise_for_status()
+                    
+                except Exception as e:
+                    print(f"Request failed for {model}: {e}. The rotating proxy might have failed. Will retry.")
+                    errors.append(f"Proxy/Network Error: {str(e)}")
+                    continue
+                    
+        # If we exhausted all keys and models for this attempt, let's wait min cooldown and retry
+        wait_times = [get_cooldown(cfg['api_key'], m) for cfg in api_keys if cfg.get('is_active') and cfg.get('provider')=='groq' for m in GROQ_MODELS]
+        valid_waits = [w for w in wait_times if w > 0]
         
-        # All providers failed this round - check if we should retry
-        if retry < max_retries - 1:
-            # Check if errors indicate rate limiting (temporary)
-            is_rate_limited = any('rate limit' in err.lower() or 'wait' in err.lower() for err in errors)
-            if is_rate_limited:
-                # Try to extract wait time from error messages
-                import re
-                wait_times = []
-                for err in errors:
-                    match = re.search(r'wait (\d+)', err.lower())
-                    if match:
-                        wait_times.append(int(match.group(1)))
-                
-                # Use smallest wait time from errors, or default
-                if wait_times:
-                    wait_time = min(wait_times) + 5  # Add 5s buffer
-                else:
-                    wait_time = 30 + (retry * 15)  # Fallback: 30s, 45s, 60s
-                
-                # Cap at 2 minutes max per retry
-                wait_time = min(wait_time, 120)
-                
-                print(f"All providers rate-limited. Waiting {wait_time}s before retry {retry + 2}/{max_retries}...")
-                time.sleep(wait_time)
-                continue
-        
-        # Not rate-limited or final retry - fail
-        break
+        if valid_waits:
+            min_wait = min(valid_waits)
+            print(f"All Groq keys/models rate limited. Waiting {min_wait:.1f}s before retry...")
+            time.sleep(min_wait + 1)
+        elif errors:
+            print("Network/proxy errors encountered. Waiting 5s before next attempt...")
+            time.sleep(5)
             
-    raise Exception(f"All providers failed: {'; '.join(errors)}")
+    raise Exception("Failed to generate content after trying multiple keys and proxy rotations.")
 
-
-def ensure_complete(text: str, api_key: str, proxy: Optional[dict] = None, provider: str = 'sambanova') -> str:
-    """
-    Ensure text ends with proper punctuation. If not, continue generating.
-    """
-    if not text:
-        return text
-
-    # Check if text ends with terminal punctuation
-    if text.strip()[-1] in '.!?':
-        return text
-
-    # Text is cut off - try to continue
-    print(f"Text appears cut off: {text[-50:]}...")
-    
-    # Take the last 200 chars as context
-    context = text[-200:]
-    
-    continue_prompt = f"""The following text was cut off. Complete the last sentence and add a concluding sentence if needed.
-    
-    Context: "...{context}"
-    
-    RULES:
-    - Output ONLY the completion
-    - Do not repeat the context
-    - Ensure it flows naturally
-    - Finish with a period."""
-    
-    try:
-        completion = call_llm(api_key, continue_prompt, 200, proxy, provider).strip() 
-        # Clean up if model repeated context
-        if completion.startswith(context):
-            completion = completion[len(context):]
-        elif completion.startswith("..."):
-            completion = completion[3:]
-            
-        full_text = text + " " + completion
-        return full_text
-    except Exception as e:
-        print(f"Failed to complete text: {e}")
-        return text + "."  # Fallback: just add a period
-
-
-def ensure_complete_with_fallback(text: str, api_keys: list, proxy: Optional[dict] = None) -> str:
-    """
-    Ensure text ends with proper punctuation using multi-provider fallback.
-    """
-    if not text:
-        return text
-
-    # Check if text ends with terminal punctuation
-    if text.strip()[-1] in '.!?':
-        return text
-
-    # Text is cut off - try to continue
-    print(f"Text appears cut off: {text[-50:]}...")
-    
-    context = text[-200:]
-    
-    continue_prompt = f"""The following text was cut off. Complete the last sentence and add a concluding sentence if needed.
-    
-    Context: "...{context}"
-    
-    RULES:
-    - Output ONLY the completion
-    - Do not repeat the context
-    - Ensure it flows naturally
-    - Finish with a period."""
-    
-    try:
-        completion, meta = call_llm_with_fallback(api_keys, continue_prompt, 200, proxy)
-        completion = completion.strip() 
-        if completion.startswith(context):
-            completion = completion[len(context):]
-        elif completion.startswith("..."):
-            completion = completion[3:]
-            
-        full_text = text + " " + completion
-        return full_text
-    except Exception as e:
-        print(f"Failed to complete text: {e}")
-        return text + "."
-
+# Keep fallback signature for compatibility, but route exclusively to Groq
+def call_llm_with_fallback(api_keys: list, prompt: str, max_tokens: int = 4096, proxy: Optional[dict] = None) -> tuple[str, dict]:
+    return call_groq_with_fallback(api_keys, prompt, max_tokens, proxy)
 
 def generate_article_content(h2s: list, api_keys: list, proxy: Optional[dict] = None) -> dict:
     """
-    Generate a full article from H2 headings using LLM with cross-provider fallback.
-    
-    Structure:
-    1. Title
-    2. Introduction (2-3 paragraphs)
-    3. Key Takeaways (styled box)
-    4. Body sections (3-4 comprehensive sections)
-    5. FAQ section (H2s with answers)
-    
-    Args:
-        h2s: List of H2 headings/questions
-        api_keys: List of API key configs [{'provider': '...', 'api_key': '...', 'is_active': True}, ...]
-        proxy: Optional proxy dict for routing requests
-    
-    Returns: {title, introduction, key_takeaways, body_sections, faq, html, meta: {provider_usage: [...]}}
+    Generate a full article from H2 headings using a single mega-prompt to minimize proxy bandwidth.
     """
     h2_list = '\n'.join([f'- {h2}' for h2 in h2s])
     generation_stats = []
     
-    def _track(step_name, meta):
-        if meta:
-            meta['step'] = step_name
-            generation_stats.append(meta)
-
-    # Step 1: Determine topic and generate title
-    title_prompt = f"""Create an SEO-optimized article title based on these topics:
+    # Dynamically scale the length requirement based on the number of headings
+    # to avoid hitting Groq's maximum output token limit (8K) before closing the JSON.
+    num_h2s = len(h2s)
+    if num_h2s >= 12:
+        para_req = "1-2 concise paragraphs"
+        faq_req = "1 short paragraph"
+    elif num_h2s >= 9:
+        para_req = "2 comprehensive paragraphs"
+        faq_req = "1 comprehensive paragraph"
+    elif num_h2s >= 6:
+        para_req = "3 comprehensive paragraphs"
+        faq_req = "1-2 paragraphs"
+    else:
+        para_req = "3-4 comprehensive paragraphs with deep analysis"
+        faq_req = "2 paragraphs"
+    
+    mega_prompt = f"""You are a professional article writer. Write a comprehensive, highly-detailed, SEO-optimized article based exactly on these topics/questions:
 
 {h2_list}
-
-RULES:
-- Output ONLY the title text
-- No quotes, no punctuation at the end
-- Make it compelling and click-worthy
-- 50-70 characters ideal length"""
-    
-    title, t_meta = call_llm_with_fallback(api_keys, title_prompt, 100, proxy)
-    _track('title', t_meta)
-    
-    title = title.strip().strip('"').strip("'").rstrip('.')
-    
-    # Validate title - fallback if empty or too short
-    if not title or len(title) < 10:
-        # Use first H2 as fallback title
-        title = h2s[0] if h2s else "Article Topic"
-    
-    # Step 2: Write introduction
-    intro_prompt = f"""Write an engaging introduction for an article titled "{title}".
 
 REQUIREMENTS:
-- Write exactly 2-3 paragraphs
-- Hook the reader in the first sentence
-- Preview what the article covers without listing topics
-- Write in second person (you/your) where appropriate
-- No headings, no bullet points
-- Separate paragraphs with blank lines
-- CRITICAL: Finish the last sentence completely."""
-    
-    introduction, i_meta = call_llm_with_fallback(api_keys, intro_prompt, 800, proxy)
-    _track('introduction', i_meta)
-    
-    introduction = introduction.strip()
-    introduction = ensure_complete_with_fallback(introduction, api_keys, proxy)
-    
-    # Step 3: Generate Key Takeaways
-    takeaways_prompt = f"""Create exactly 6 key takeaways for an article about "{title}".
+1. Write an engaging title (50-70 characters).
+2. Write an introduction (2-3 paragraphs) that hooks the reader.
+3. Provide exactly 5-7 key takeaways (brief, actionable sentences).
+4. Write extensive body sections based on the topics. Each section should be {para_req}.
+5. Provide a FAQ section answering any questions from the list above. Each answer should be {faq_req}.
 
-Topics covered:
-{h2_list}
+GOAL: The total final article should exceed 1500-2000 words in length. Extensively expand on every point.
 
-FORMAT RULES:
-- Start each line with a dash (-)
-- One takeaway per line
-- Each takeaway should be 15-25 words
-- Be specific and actionable
-- No numbering, no introductory text
-- Output ONLY the 6 takeaways, nothing else"""
+FORMATTING:
+You MUST return your response as a valid JSON object matching this structural schema. Do NOT return anything else:
+{{
+    "title": "Article Title",
+    "introduction": "Paragraph 1\n\nParagraph 2...",
+    "key_takeaways": [
+        "Takeaway 1",
+        "Takeaway 2"
+    ],
+    "body_sections": {{
+        "Section 1 Heading": "Paragraph 1\n\nParagraph 2...",
+        "Section 2 Heading": "Paragraph 1\n\nParagraph 2..."
+    }},
+    "faq": {{
+        "Question 1": "Answer 1\n\nAnswer 2...",
+        "Question 2": "Answer 1..."
+    }}
+}}
+
+CRITICAL INSTRUCTIONS:
+- ONLY output a valid JSON object. No markdown wrapping (like ```json). No extra text before or after the JSON.
+- DO NOT use markdown formatting (**, ##) within the text values. Just plain strings with \n\n for paragraph breaks.
+- Ensure the JSON is completely valid and properly closed at the end. Do not exceed typical output length limits before closing the object."""
     
-    takeaways_raw, tk_meta = call_llm_with_fallback(api_keys, takeaways_prompt, 600, proxy)
-    _track('takeaways', tk_meta)
-    
-    takeaways_raw = takeaways_raw.strip()
-    
-    # Parse takeaways - try multiple formats
-    key_takeaways = []
-    for line in takeaways_raw.split('\n'):
-        line = line.strip()
-        if not line:
-            continue
-        # Remove common prefixes
-        line = line.lstrip('-').lstrip('•').lstrip('*').strip()
-        line = line.lstrip('0123456789.').strip()
-        if line and len(line) > 10:  # Must be at least 10 chars
-            key_takeaways.append(line)
-    
-    # Ensure we have at least 4 takeaways
-    if len(key_takeaways) < 4:
-        print(f"Key takeaways parsing got only {len(key_takeaways)}, regenerating...")
-        retry_prompt = f"""List 6 key points about "{title}". 
-Write each point as a complete sentence on its own line.
-Do not number them. Do not use bullet points. Just sentences."""
+    try:
+        content_json_str, meta = call_llm_with_fallback(api_keys, mega_prompt, max_tokens=8000, proxy=proxy)
+        meta['step'] = 'mega_prompt'
+        generation_stats.append(meta)
         
-        retry_raw, r_meta = call_llm_with_fallback(api_keys, retry_prompt, 600, proxy)
-        _track('takeaways_retry', r_meta)
-        
-        retry_raw = retry_raw.strip()
-        key_takeaways = [line.strip() for line in retry_raw.split('\n') if line.strip() and len(line.strip()) > 15]
-    
-    key_takeaways = key_takeaways[:7]  # Cap at 7
-    
-    # Step 4: Generate 3-4 body sections
-    sections_prompt = f"""Suggest 3-4 main section headings for an article titled "{title}".
-
-The article should address:
-{h2_list}
-
-FORMAT:
-- One heading per line
-- No numbers, no dashes
-- Headings should be 4-8 words each
-- Make them descriptive and engaging"""
-    
-    sections_raw, s_meta = call_llm_with_fallback(api_keys, sections_prompt, 300, proxy)
-    _track('sections_outline', s_meta)
-    
-    sections_raw = sections_raw.strip()
-    section_headings = []
-    for s in sections_raw.split('\n'):
-        s = s.strip().lstrip('-').lstrip('•').strip()
-        s = s.lstrip('0123456789.').strip()
-        if s and len(s) > 5:
-            section_headings.append(s)
-    section_headings = section_headings[:4]
-    
-    # Fallback: If no section headings were parsed, use first 3-4 H2s as sections
-    if not section_headings or len(section_headings) < 2:
-        print(f"Section headings parsing failed, using H2s as fallback")
-        section_headings = h2s[:4] if len(h2s) >= 4 else h2s[:3]
-    
-    body_sections = {}
-    for heading in section_headings:
-        section_prompt = f"""Write comprehensive content for this section of an article titled "{title}":
-
-Section Topic: {heading}
-
-REQUIREMENTS:
-- Write 4-5 substantial paragraphs (at least 150 words per paragraph)
-- Include practical tips, real examples, and actionable advice
-- Write in a conversational but professional tone
-- Separate paragraphs with blank lines
-- Do NOT include the section heading in your response
-- Do NOT use any markdown formatting (no **, ##, bullets, etc.)
-- Write in plain prose only
-- CRITICAL: Complete every sentence and paragraph fully. Do not stop mid-thought."""
-        
-        # Increased token limit to 2000 for more comprehensive sections
-        content, c_meta = call_llm_with_fallback(api_keys, section_prompt, 2000, proxy)
-        _track(f'section_{heading[:10]}', c_meta)
-        
-        content = content.strip()
-        content = ensure_complete_with_fallback(content, api_keys, proxy)
-        
-        # Validate content is substantial (at least 200 chars)
-        if len(content) < 200:
-            print(f"Section '{heading}' content too short ({len(content)} chars), regenerating...")
-            # Retry with more explicit prompt
-            retry_prompt = f"""Write a detailed 4-paragraph explanation about: {heading}
-
-Context: This is for an article titled "{title}"
-
-Each paragraph should be 3-4 sentences. Write informative, helpful content with examples.
-Do not use any formatting. Just plain paragraphs separated by blank lines."""
+        # Clean JSON markdown wrapping if model ignored instructions
+        content_json_str = content_json_str.strip()
+        if content_json_str.startswith('```json'):
+            content_json_str = content_json_str[7:-3]
+        elif content_json_str.startswith('```'):
+            content_json_str = content_json_str[3:-3]
             
-            content, cr_meta = call_llm_with_fallback(api_keys, retry_prompt, 2000, proxy)
-            _track(f'section_retry_{heading[:10]}', cr_meta)
-            
-            content = content.strip()
-            content = ensure_complete_with_fallback(content, api_keys, proxy)
+        data = json.loads(content_json_str)
         
-        body_sections[heading] = content
-    
-    # Step 5: Answer each H2 as FAQ
-    faq = {}
-    for h2 in h2s:
-        answer_prompt = f"""Provide a comprehensive answer to this question:
-
-Question: {h2}
-
-Article context: {title}
-
-REQUIREMENTS:
-- Write 2-3 paragraphs with detailed, helpful information
-- Start directly with the answer (don't repeat the question)
-- Include specific facts, examples, or statistics when relevant
-- Write in an informative, authoritative tone
-- Separate paragraphs with blank lines
-- Do NOT use bullet points, lists, or any formatting
-- Write in plain prose only
-- CRITICAL: Complete every sentence fully."""
+        title = data.get('title', h2s[0] if h2s else "Article")
+        introduction = data.get('introduction', '')
+        key_takeaways = data.get('key_takeaways', [])
+        body_sections = data.get('body_sections', {})
+        faq = data.get('faq', {})
         
-        # Increased token limit to 1000 for comprehensive answers
-        answer, a_meta = call_llm_with_fallback(api_keys, answer_prompt, 1000, proxy)
-        _track(f'faq_{h2[:10]}', a_meta)
+        # Build HTML
+        html_parts = []
         
-        answer = answer.strip()
-        answer = ensure_complete_with_fallback(answer, api_keys, proxy)
-        faq[h2] = answer
-    
-    # Step 6: Build HTML with CSS classes
-    html_parts = []
-    
-    # Introduction
-    intro_paragraphs = [p.strip() for p in introduction.split('\n') if p.strip()]
-    html_parts.append('<div class="article-intro">')
-    for p in intro_paragraphs:
-        html_parts.append(f'<p>{p}</p>')
-    html_parts.append('</div>')
-    
-    # Key Takeaways Box
-    if key_takeaways:
-        html_parts.append('<div class="key-takeaways">')
-        html_parts.append('<h2 class="takeaways-title">🔑 Key Takeaways</h2>')
-        html_parts.append('<ul class="takeaways-list">')
-        for takeaway in key_takeaways:
-            html_parts.append(f'<li>{takeaway}</li>')
-        html_parts.append('</ul>')
-        html_parts.append('</div>')
-    
-    # Search for YouTube videos related to the article title
-    youtube_videos = search_youtube(title, max_results=2)
-    video_1 = youtube_videos[0]['embed_html'] if len(youtube_videos) > 0 else ''
-    video_2 = youtube_videos[1]['embed_html'] if len(youtube_videos) > 1 else ''
-    
-    # Body Sections - insert first video after the first section
-    section_idx = 0
-    for heading, content in body_sections.items():
-        html_parts.append(f'<h2 class="section-heading">{heading}</h2>')
-        html_parts.append('<div class="section-content">')
-        paragraphs = [p.strip() for p in content.split('\n') if p.strip()]
-        for p in paragraphs:
+        # Introduction
+        intro_paragraphs = [p.strip() for p in introduction.split('\n') if p.strip()]
+        html_parts.append('<div class="article-intro">')
+        for p in intro_paragraphs:
             html_parts.append(f'<p>{p}</p>')
         html_parts.append('</div>')
         
-        # Insert first YouTube video after first body section
-        if section_idx == 0 and video_1:
-            html_parts.append(video_1)
-        section_idx += 1
-    
-    # FAQ Section - insert second video after 3rd FAQ
-    if faq:
-        html_parts.append('<div class="faq-section">')
-        html_parts.append('<h2 class="faq-title">❓ Frequently Asked Questions</h2>')
-        faq_idx = 0
-        for h2, answer in faq.items():
-            html_parts.append('<div class="faq-item">')
-            html_parts.append(f'<h3 class="faq-question">{h2}</h3>')
-            answer_paragraphs = [p.strip() for p in answer.split('\n') if p.strip()]
-            html_parts.append('<div class="faq-answer">')
-            for p in answer_paragraphs:
-                html_parts.append(f'<p>{p}</p>')
-            html_parts.append('</div>')
+        # Key Takeaways
+        if key_takeaways:
+            html_parts.append('<div class="key-takeaways">')
+            html_parts.append('<h2 class="takeaways-title">🔑 Key Takeaways</h2>')
+            html_parts.append('<ul class="takeaways-list">')
+            for takeaway in key_takeaways:
+                html_parts.append(f'<li>{takeaway}</li>')
+            html_parts.append('</ul>')
             html_parts.append('</div>')
             
-            # Insert second YouTube video after 3rd FAQ
-            if faq_idx == 2 and video_2:
-                html_parts.append(video_2)
-            faq_idx += 1
-        html_parts.append('</div>')
-    
-    content_html = '\n'.join(html_parts)
-    
-    return {
-        'title': title,
-        'introduction': introduction,
-        'key_takeaways': key_takeaways,
-        'body_sections': body_sections,
-        'faq': faq,
-        'html': content_html,
-        'meta': {'provider_usage': generation_stats}
-    }
+        # Search YouTube
+        youtube_videos = search_youtube(title, max_results=2)
+        video_1 = youtube_videos[0]['embed_html'] if len(youtube_videos) > 0 else ''
+        video_2 = youtube_videos[1]['embed_html'] if len(youtube_videos) > 1 else ''
+        
+        # Body Sections
+        section_idx = 0
+        for heading, content in body_sections.items():
+            html_parts.append(f'<h2 class="section-heading">{str(heading)}</h2>')
+            html_parts.append('<div class="section-content">')
+            paragraphs = [p.strip() for p in str(content).split('\n') if p.strip()]
+            for p in paragraphs:
+                html_parts.append(f'<p>{p}</p>')
+            html_parts.append('</div>')
+            
+            if section_idx == 0 and video_1:
+                html_parts.append(video_1)
+            section_idx += 1
+            
+        # FAQs
+        if faq:
+            html_parts.append('<div class="faq-section">')
+            html_parts.append('<h2 class="faq-title">❓ Frequently Asked Questions</h2>')
+            faq_idx = 0
+            for heading, content in faq.items():
+                html_parts.append('<div class="faq-item">')
+                html_parts.append(f'<h3 class="faq-question">{str(heading)}</h3>')
+                html_parts.append('<div class="faq-answer">')
+                paragraphs = [p.strip() for p in str(content).split('\n') if p.strip()]
+                for p in paragraphs:
+                    html_parts.append(f'<p>{p}</p>')
+                html_parts.append('</div>')
+                html_parts.append('</div>')
+                
+                if faq_idx == 1 and video_2:
+                    html_parts.append(video_2)
+                faq_idx += 1
+            html_parts.append('</div>')
+            
+        content_html = '\n'.join(html_parts)
+        
+        return {
+            'title': title,
+            'introduction': introduction,
+            'key_takeaways': key_takeaways,
+            'body_sections': body_sections,
+            'faq': faq,
+            'html': content_html,
+            'meta': {'provider_usage': generation_stats}
+        }
+    except Exception as e:
+        print(f"Failed to generate article using mega-prompt: {e}")
+        raise
 
 
 
