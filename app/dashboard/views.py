@@ -280,19 +280,31 @@ def manage_api_keys(request, site_id):
     if request.method == 'POST':
         provider = request.POST.get('provider')
         api_key = request.POST.get('api_key')
+        bulk_keys = request.POST.get('bulk_keys')
         model_name = request.POST.get('model_name', '')
         
-        if provider and api_key:
-            APIKey.objects.update_or_create(
-                site=site,
-                provider=provider,
-                defaults={
-                    'api_key': api_key,
-                    'model_name': model_name,
-                    'is_active': True
-                }
-            )
-            messages.success(request, f'{provider.title()} API key saved')
+        if provider:
+            if bulk_keys:
+                keys = [k.strip() for k in bulk_keys.replace('\r', '').split('\n') if k.strip()]
+                if keys:
+                    for k in keys:
+                        APIKey.objects.create(
+                            site=site,
+                            provider=provider,
+                            api_key=k,
+                            model_name=model_name,
+                            is_active=True
+                        )
+                    messages.success(request, f'Successfully added {len(keys)} {provider.title()} API keys.')
+            elif api_key:
+                APIKey.objects.create(
+                    site=site,
+                    provider=provider,
+                    api_key=api_key,
+                    model_name=model_name,
+                    is_active=True
+                )
+                messages.success(request, f'{provider.title()} API key saved')
         
         return redirect('dashboard:manage_api_keys', site_id=site_id)
     
