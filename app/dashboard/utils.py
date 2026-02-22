@@ -576,10 +576,23 @@ def call_groq_with_fallback(api_keys: list, prompt: str, max_tokens: int = 8000,
     Creates a new connection per request to ensure rotating proxies assign a new IP.
     """
     import random
+    from django.core.cache import cache
     
-    # Shuffle keys for true load balancing across concurrent background workers
     api_keys_copy = list(api_keys)
-    random.shuffle(api_keys_copy)
+    if not api_keys_copy:
+        raise ValueError("No API keys provided")
+        
+    # Enforce strict n+1 round-robin across celery workers using Cache
+    # We sort by API key string to ensure consistent ordering across processes
+    api_keys_copy.sort(key=lambda x: x.get('api_key', ''))
+    
+    current_index = cache.get('groq_api_key_index', 0)
+    # Increment for the next worker
+    cache.set('groq_api_key_index', current_index + 1, timeout=86400)
+    
+    # Shift the list so the current index is at the front (modulo math)
+    start_idx = current_index % len(api_keys_copy)
+    api_keys_copy = api_keys_copy[start_idx:] + api_keys_copy[:start_idx]
     
     max_retries = len(api_keys_copy) * len(GROQ_MODELS) * 2
     
