@@ -740,18 +740,34 @@ def generate_article_content(h2s: list, api_keys: list, proxy: Optional[dict] = 
         para_req = "3-4 comprehensive paragraphs with deep analysis"
         faq_req = "2 paragraphs"
     
-    mega_prompt = f"""You are a professional article writer. Write a comprehensive, highly-detailed, SEO-optimized article based exactly on these topics/questions:
+    mega_prompt = f"""You are an elite, highly-paid technical content writer and SEO specialist. Write a comprehensive, highly-detailed, and deeply informative blog post covering the following core topics and user questions:
 
 {h2_list}
 
-REQUIREMENTS:
-1. Write a highly engaging, SEO-optimized title formatted as a comprehensive "How-To" guide or an informative, solution-oriented headline. It must be catchy and directly address the user's search intent based on the headings. Do not use generic encyclopedic titles (e.g., instead of "Safe Coloring for Canines", output "How to Safely Dye Your Dog's Hair: A Complete Guide").
-2. Write an introduction (2-3 paragraphs) that hooks the reader.
-3. Provide exactly 5-7 key takeaways (brief, actionable sentences).
-4. Write extensive body sections based on the topics. Each section should be {para_req}.
-5. Provide a FAQ section answering any questions from the list above. Each answer should be {faq_req}.
+STRICT INSTRUCTIONS TO AVOID REPETITION & FLUFF:
+You will be heavily penalized for repeating the same concepts, repeating phrases from paragraph to paragraph, or repeating intro/outro fluff across sections. Every section must introduce NEW information, NEW examples, and NEW analysis.
 
-GOAL: The total final article should exceed 1500-2000 words in length. Extensively expand on every point.
+TONE & STYLE GUIDELINES (CRITICAL):
+- Do NOT sound like an AI. Avoid robotic, overly formal transitions like "In conclusion," "Furthermore," or "It is important to note that."
+- Write in a natural, conversational, yet authoritative human voice. Use active voice.
+- Vary your sentence structure. Mix short, punchy sentences with longer, explanatory ones.
+- Use concrete examples, relatable analogies, or hypothetical scenarios to explain complex topics. Do not just state abstract facts.
+
+REQUIREMENTS:
+1. Title: Write a highly engaging, SEO-optimized title formatted as a comprehensive guide. It must be catchy and directly address the search intent.
+2. Introduction: Write an engaging hook (2-3 paragraphs). Outline exactly what the user will learn.
+3. Key Takeaways: Provide exactly 5-7 actionable, distinct bullet points.
+4. Main Body Sections: Convert the provided topics into a logical, flowing blog post. 
+   - DO NOT copy/paste the exact input questions as your headings. Synthesize them into professional, engaging blog headers.
+   - Each section should contain {para_req}.
+   - Dive deep into the subject matter. Provide step-by-step instructions, technical breakdowns, analogies, or concrete examples.
+   - DO NOT repeat introductory fluff at the start of every section. Get straight to the point.
+5. FAQ Section: Create a dedicated "Frequently Asked Questions" section at the very end. 
+   - Generate 4-6 highly specific questions that a reader might still have after reading the main text.
+   - Answer them concisely ({faq_req}). 
+   - CRITICAL: These questions MUST NOT be the same topics you already covered in the main body. They must touch on edge-cases, common troubleshooting, or related tangential concepts. DO NOT REPEAT YOURSELF.
+
+GOAL: The total final article should exceed 1500-2000 words in length. Extensively expand on every point to provide maximum, unique conversational value.
 
 FORMATTING:
 You MUST return your response as a valid JSON object matching this structural schema. Do NOT return anything else:
