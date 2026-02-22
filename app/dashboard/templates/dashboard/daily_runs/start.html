@@ -38,6 +38,26 @@
                         </div>
                     </div>
                     
+                    {% if active_keys_count > 0 %}
+                    <div class="alert alert-success mt-4">
+                        <div style="flex: 1">
+                            <strong><i class="bi bi-info-circle"></i> Daily Capacity Estimate</strong>
+                            <p class="mb-0 mt-1 small" style="opacity: 0.9">
+                                Based on your <strong>{{ active_keys_count }} active Groq API keys</strong>, this site can comfortably generate up to <strong style="cursor: pointer; text-decoration: underline;" onclick="document.getElementById('target_count').value = '{{ estimated_capacity }}';" title="Click to fill target count">{{ estimated_capacity }} highly-detailed SEO articles per day</strong> without hitting the 600K token ceilings.
+                            </p>
+                        </div>
+                    </div>
+                    {% else %}
+                    <div class="alert alert-danger mt-4">
+                        <div style="flex: 1">
+                            <strong><i class="bi bi-exclamation-triangle"></i> No API Keys Detected</strong>
+                            <p class="mb-0 mt-1 small" style="opacity: 0.9">
+                                This site currently has 0 active Groq API keys. You must <a href="{% url 'dashboard:manage_api_keys' site.id %}" style="text-decoration: underline; font-weight: bold; color: inherit;">add API keys</a> before starting a daily run.
+                            </p>
+                        </div>
+                    </div>
+                    {% endif %}
+                    
                     <div class="alert alert-info mt-4">
                         <div style="flex: 1">
                             <strong><i class="bi bi-clock-history"></i> Automatic Scheduling</strong>

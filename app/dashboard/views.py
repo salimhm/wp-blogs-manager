@@ -1234,9 +1234,15 @@ def start_daily_run(request, site_id):
         except Exception as e:
             messages.error(request, f'Error: {str(e)}')
             
+    # Calculate capacity safely based on tokens/article limit
+    active_keys_count = site.api_keys.filter(is_active=True, provider='groq').count()
+    estimated_capacity = active_keys_count * 132
+            
     return render(request, 'dashboard/daily_runs/start.html', {
         'site': site,
-        'keyword_lists': keyword_lists
+        'keyword_lists': keyword_lists,
+        'active_keys_count': active_keys_count,
+        'estimated_capacity': estimated_capacity
     })
 
 
