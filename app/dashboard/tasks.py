@@ -358,7 +358,7 @@ def create_pending_articles_task(site_id, keyword_list_id, selected_indices=None
 def auto_resume_stalled_runs():
     """
     Heartbeat task to recover Daily Runs that were paused/killed by a Redis disconnect crash.
-    Runs every 30 minutes. If a run hasn't finished, but hasn't generated an article in 30+ minutes,
+    Runs every 5 minutes. If a run hasn't finished, but hasn't generated an article in 5+ minutes,
     it re-triggers the scheduler.
     """
     from .models import DailyRun, Article

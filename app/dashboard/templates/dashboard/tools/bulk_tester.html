@@ -1,0 +1,254 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}Bulk API Key Tester | Dashboard{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+    <h1 class="h2">Bulk Groq API Key Tester</h1>
+</div>
+
+<div class="row">
+    <div class="col-md-5">
+        <div class="card shadow-sm mb-4">
+            <div class="card-header bg-white">
+                <h5 class="mb-0">Test Configuration</h5>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info">
+                    <i class="bi bi-info-circle me-1"></i>
+                    <strong>{{ api_keys|length }}</strong> existing Groq keys loaded from the database.
+                </div>
+                
+                <form id="testerForm">
+                    <!-- Invisible store for DB keys -->
+                    <div id="dbKeys" style="display:none;">
+                        {% for key in api_keys %}
+                            <input type="hidden" class="db-key-value" value="{{ key.api_key }}">
+                        {% endfor %}
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="extra_keys" class="form-label">Additional Keys to Test (Optional)</label>
+                        <textarea class="form-control" id="extra_keys" rows="5" placeholder="Paste extra Groq API keys here, one per line or comma separated..."></textarea>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <label for="proxy_id" class="form-label">Proxy</label>
+                        <select class="form-select" id="proxy_id" name="proxy_id">
+                            <option value="">Direct Connection (No Proxy)</option>
+                            {% for proxy in proxies %}
+                                <option value="{{ proxy.id }}">
+                                    [{{ proxy.site.domain|default:"Global" }}] {{ proxy.host }}:{{ proxy.port }} ({{ proxy.proxy_type }})
+                                </option>
+                            {% endfor %}
+                        </select>
+                        <div class="form-text">Choose a proxy to route the test requests through.</div>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary w-100" id="startBtn">
+                        <i class="bi bi-play-fill me-1"></i> Start Bulk Test
+                    </button>
+                    <button type="button" class="btn btn-danger w-100 d-none" id="stopBtn">
+                        <i class="bi bi-stop-fill me-1"></i> Stop Test
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-7">
+        <div class="card shadow-sm mb-4">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Real-Time Results</h5>
+                <span class="badge bg-secondary" id="progressBadge">0 / 0</span>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive" style="max-height: 600px; overflow-y: auto;">
+                    <table class="table table-hover table-striped mb-0">
+                        <thead class="table-light sticky-top">
+                            <tr>
+                                <th>API Key</th>
+                                <th>Status</th>
+                                <th>Response</th>
+                                <th>Retries</th>
+                            </tr>
+                        </thead>
+                        <tbody id="resultsTableBody">
+                            <tr>
+                                <td colspan="4" class="text-center text-muted py-4">
+                                    Click "Start Bulk Test" to begin...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const testerForm = document.getElementById('testerForm');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const extraKeysInput = document.getElementById('extra_keys');
+    const proxySelect = document.getElementById('proxy_id');
+    const resultsBody = document.getElementById('resultsTableBody');
+    const progressBadge = document.getElementById('progressBadge');
+    
+    let isTesting = false;
+    let eventSource = null;
+    let totalKeys = 0;
+    let testedKeys = 0;
+
+    testerForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        // 1. Collect all keys
+        let allKeys = [];
+        document.querySelectorAll('.db-key-value').forEach(el => {
+            if (el.value.trim()) allKeys.push(el.value.trim());
+        });
+        
+        let extraText = extraKeysInput.value;
+        if (extraText) {
+            let extraArr = extraText.split(/[\n,]+/);
+            extraArr.forEach(k => {
+                let clean = k.trim();
+                if (clean) allKeys.push(clean);
+            });
+        }
+        
+        // Deduplicate
+        allKeys = [...new Set(allKeys)];
+        
+        if (allKeys.length === 0) {
+            alert('No API keys found in the database and none provided in the text area!');
+            return;
+        }
+
+        // 2. Prepare UI
+        isTesting = true;
+        totalKeys = allKeys.length;
+        testedKeys = 0;
+        startBtn.classList.add('d-none');
+        stopBtn.classList.remove('d-none');
+        progressBadge.textContent = `0 / ${totalKeys}`;
+        progressBadge.className = 'badge bg-primary';
+        resultsBody.innerHTML = ''; // clear table
+        
+        // 3. Obtain CSRF Token for the initial POST jump-start
+        const csrfToken = '{{ csrf_token }}';
+
+        try {
+            const response = await fetch('{% url "dashboard:stream_key_test" %}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': csrfToken
+                },
+                body: JSON.stringify({
+                    keys: allKeys,
+                    proxy_id: proxySelect.value
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+
+            // 4. Read the SSE Stream Manually using the ReadableStream API 
+            // (Standard EventSource only supports GET, so we parse the stream chunk by chunk from a POST fetch)
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            
+            async function readStream() {
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    if (!isTesting) {
+                        reader.cancel();
+                        break;
+                    }
+                    
+                    const chunk = decoder.decode(value, { stream: true });
+                    const lines = chunk.split('\n\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const dataStr = line.substring(6);
+                            if (!dataStr) continue;
+                            
+                            try {
+                                const payload = JSON.parse(dataStr);
+                                
+                                if (payload.type === 'init') {
+                                    // init ack
+                                } else if (payload.type === 'result') {
+                                    testedKeys++;
+                                    progressBadge.textContent = `${testedKeys} / ${totalKeys}`;
+                                    
+                                    // Build row
+                                    const tr = document.createElement('tr');
+                                    let badgeClass = 'bg-secondary';
+                                    if (payload.status === 'Valid') badgeClass = 'bg-success';
+                                    if (payload.status === 'Invalid') badgeClass = 'bg-danger';
+                                    if (payload.status === 'Error') badgeClass = 'bg-warning text-dark';
+                                    
+                                    tr.innerHTML = `
+                                        <td><code>${payload.key}</code></td>
+                                        <td><span class="badge ${badgeClass}">${payload.status}</span></td>
+                                        <td><small class="text-muted">${payload.response}</small></td>
+                                        <td>${payload.attempts > 1 ? '<span class="badge bg-warning text-dark">' + payload.attempts + '</span>' : payload.attempts}</td>
+                                    `;
+                                    // Append so older stuff stays at top, or prepend for reverse chronological
+                                    resultsBody.prepend(tr);
+                                } else if (payload.type === 'done') {
+                                    finishTest('Completed');
+                                }
+                            } catch (err) {
+                                console.error('Error parsing SSE json', err, dataStr);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            readStream().catch(err => {
+                console.error("Stream failed", err);
+                finishTest('Error');
+            });
+            
+        } catch (error) {
+            console.error('Fetch error:', error);
+            finishTest('Error');
+        }
+    });
+
+    stopBtn.addEventListener('click', function() {
+        if (isTesting) {
+            isTesting = false; // The fetch stream reader loop will cleanly exit on next chunk
+            finishTest('Stopped');
+        }
+    });
+    
+    function finishTest(finalStatusStr) {
+        startBtn.classList.remove('d-none');
+        stopBtn.classList.add('d-none');
+        isTesting = false;
+        
+        if (finalStatusStr === 'Completed') {
+            progressBadge.className = 'badge bg-success';
+        } else if (finalStatusStr === 'Stopped') {
+            progressBadge.className = 'badge bg-secondary';
+            progressBadge.textContent += ' (Stopped)';
+        } else {
+            progressBadge.className = 'badge bg-danger';
+            progressBadge.textContent += ' (Error)';
+        }
+    }
+});
+</script>
+{% endblock %}

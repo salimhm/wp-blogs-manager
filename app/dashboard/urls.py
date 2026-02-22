@@ -26,6 +26,8 @@ urlpatterns = [
     
     # Proxy management
     path('proxies/', views.proxy_list, name='proxy_list'),
+    path('proxies/bulk-tester/', views.bulk_key_tester, name='bulk_key_tester'),
+    path('proxies/bulk-tester/stream/', views.stream_key_test, name='stream_key_test'),
     path('sites/<int:site_id>/proxies/', views.manage_proxies, name='manage_proxies'),
     path('sites/<int:site_id>/proxies/<int:proxy_id>/delete/', views.delete_proxy, name='delete_proxy'),
     path('sites/<int:site_id>/proxies/<int:proxy_id>/test/', views.test_proxy, name='test_proxy'),

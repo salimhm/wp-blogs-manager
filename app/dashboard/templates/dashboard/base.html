@@ -60,9 +60,15 @@
                             </a>
                         </li>
                         <li>
-                            <a href="{% url 'dashboard:proxy_list' %}" class="nav-link {% if 'proxies' in request.path and 'sites' not in request.path %}active{% endif %}">
+                            <a href="{% url 'dashboard:proxy_list' %}" class="nav-link {% if 'proxies' in request.path and 'bulk-tester' not in request.path and 'sites' not in request.path %}active{% endif %}">
                                 <span class="nav-icon">🛡️</span>
                                 <span>Proxies</span>
+                            </a>
+                        </li>
+                        <li>
+                            <a href="{% url 'dashboard:bulk_key_tester' %}" class="nav-link {% if 'bulk-tester' in request.path %}active{% endif %}">
+                                <span class="nav-icon">🔑</span>
+                                <span>Bulk Key Tester</span>
                             </a>
                         </li>
                     </ul>

@@ -341,6 +341,101 @@ def delete_api_key(request, site_id, key_id):
     return redirect('dashboard:manage_api_keys', site_id=site_id)
 
 
+def bulk_key_tester(request):
+    """View to load all API keys across all sites for bulk testing."""
+    api_keys = APIKey.objects.filter(provider='groq').select_related('site').all()
+    proxies = ProxySettings.objects.select_related('site').all().order_by('site__domain')
+    return render(request, 'dashboard/tools/bulk_tester.html', {
+        'api_keys': api_keys, 
+        'proxies': proxies
+    })
+
+
+@require_http_methods(["POST"])
+def stream_key_test(request):
+    """SSE endpoint for continuously testing a list of API keys."""
+    try:
+        data = json.loads(request.body)
+        keys_to_test = data.get('keys', [])
+        proxy_id = data.get('proxy_id')
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=400)
+    
+    proxy_dict = None
+    if proxy_id:
+        try:
+            proxy = ProxySettings.objects.get(id=proxy_id)
+            if proxy.username:
+                proxy_url = f"{proxy.proxy_type}://{proxy.username}:{proxy.password}@{proxy.host}:{proxy.port}"
+            else:
+                proxy_url = f"{proxy.proxy_type}://{proxy.host}:{proxy.port}"
+            proxy_dict = {"http": proxy_url, "https": proxy_url}
+        except ProxySettings.DoesNotExist:
+            pass
+
+    def generate_events():
+        import requests
+        import time
+        
+        url = "https://api.groq.com/openai/v1/models"
+        total = len(keys_to_test)
+        yield f"data: {json.dumps({'type': 'init', 'total': total})}\n\n"
+        
+        for idx, key in enumerate(keys_to_test):
+            key = key.strip()
+            if not key:
+                continue
+                
+            masked_key = f"{key[:8]}...{key[-4:]}" if len(key) > 12 else "INVALID_LEN"
+            headers = {"Authorization": f"Bearer {key}"}
+            
+            success = False
+            response_text = ""
+            status_str = "Error"
+            attempts = 0
+            
+            for attempt in range(1, 6):
+                attempts = attempt
+                try:
+                    res = requests.get(url, headers=headers, proxies=proxy_dict, timeout=10)
+                    if res.status_code == 200:
+                        success = True
+                        status_str = "Valid"
+                        response_text = "200 OK"
+                        break
+                    elif res.status_code == 429:
+                        response_text = f"429 Rate Limit"
+                        time.sleep(2)
+                        continue
+                    elif res.status_code >= 500:
+                        response_text = f"{res.status_code} Server Error"
+                        time.sleep(2)
+                        continue
+                    else:
+                        status_str = "Invalid"
+                        try:
+                            error_msg = res.json().get('error', {}).get('message', res.text[:50])
+                        except:
+                            error_msg = res.text[:50]
+                        response_text = f"{res.status_code} - {error_msg}"
+                        break
+                except Exception as e:
+                    response_text = f"Connection error: {str(e)[:40]}"
+                    time.sleep(2)
+            
+            yield f"data: {json.dumps({'type': 'result', 'key': masked_key, 'status': status_str, 'response': response_text, 'attempts': attempts})}\n\n"
+            
+            # Tiny sleep to avoid completely saturating local network instantly
+            time.sleep(0.1)
+            
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    response = StreamingHttpResponse(generate_events(), content_type='text/event-stream')
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
+
+
 def proxy_list(request):
     """List all proxies for all sites."""
     proxies = ProxySettings.objects.select_related('site').all().order_by('site__domain', '-created_at')
