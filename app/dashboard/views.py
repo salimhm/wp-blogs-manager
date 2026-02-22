@@ -381,8 +381,14 @@ def stream_key_test(request):
         total = len(keys_to_test)
         yield f"data: {json.dumps({'type': 'init', 'total': total})}\n\n"
         
-        for idx, key in enumerate(keys_to_test):
-            key = key.strip()
+        for idx, item in enumerate(keys_to_test):
+            if isinstance(item, dict):
+                key = item.get('key', '').strip()
+                created_at = item.get('created_at', 'N/A')
+            else:
+                key = str(item).strip()
+                created_at = 'N/A'
+                
             if not key:
                 continue
                 
@@ -423,7 +429,7 @@ def stream_key_test(request):
                     response_text = f"Connection error: {str(e)[:40]}"
                     time.sleep(2)
             
-            yield f"data: {json.dumps({'type': 'result', 'key': masked_key, 'status': status_str, 'response': response_text, 'attempts': attempts})}\n\n"
+            yield f"data: {json.dumps({'type': 'result', 'key': masked_key, 'created_at': created_at, 'status': status_str, 'response': response_text, 'attempts': attempts})}\n\n"
             
             # Tiny sleep to avoid completely saturating local network instantly
             time.sleep(0.1)

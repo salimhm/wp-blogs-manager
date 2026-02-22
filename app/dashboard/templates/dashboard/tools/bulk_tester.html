@@ -23,7 +23,7 @@
                     <!-- Invisible store for DB keys -->
                     <div id="dbKeys" style="display:none;">
                         {% for key in api_keys %}
-                            <input type="hidden" class="db-key-value" value="{{ key.api_key }}">
+                            <input type="hidden" class="db-key-value" value="{{ key.api_key }}" data-created="{{ key.created_at|date:'M j, Y' }}">
                         {% endfor %}
                     </div>
 
@@ -52,6 +52,13 @@
                         <i class="bi bi-stop-fill me-1"></i> Stop Test
                     </button>
                 </form>
+                
+                <div class="card mt-4 bg-light d-none" id="statsCard">
+                    <div class="card-body text-center py-3">
+                        <h6 class="text-muted text-uppercase fw-bold mb-2" style="letter-spacing: 1px; font-size: 0.8rem;">Success Rate</h6>
+                        <h3 class="mb-0 text-success fw-bold" id="successCounter">0 / 0</h3>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -67,6 +74,7 @@
                     <table class="table table-hover table-striped mb-0">
                         <thead class="table-light sticky-top">
                             <tr>
+                                <th>Date Created</th>
                                 <th>API Key</th>
                                 <th>Status</th>
                                 <th>Response</th>
@@ -75,7 +83,7 @@
                         </thead>
                         <tbody id="resultsTableBody">
                             <tr>
-                                <td colspan="4" class="text-center text-muted py-4">
+                                <td colspan="5" class="text-center text-muted py-4">
                                     Click "Start Bulk Test" to begin...
                                 </td>
                             </tr>
@@ -96,11 +104,15 @@ document.addEventListener('DOMContentLoaded', function() {
     const proxySelect = document.getElementById('proxy_id');
     const resultsBody = document.getElementById('resultsTableBody');
     const progressBadge = document.getElementById('progressBadge');
+    const statsCard = document.getElementById('statsCard');
+    const successCounter = document.getElementById('successCounter');
     
     let isTesting = false;
     let eventSource = null;
     let totalKeys = 0;
     let testedKeys = 0;
+    let successKeys = 0;
+    let keyDates = {};
 
     testerForm.addEventListener('submit', async function(e) {
         e.preventDefault();
@@ -108,7 +120,11 @@ document.addEventListener('DOMContentLoaded', function() {
         // 1. Collect all keys
         let allKeys = [];
         document.querySelectorAll('.db-key-value').forEach(el => {
-            if (el.value.trim()) allKeys.push(el.value.trim());
+            let val = el.value.trim();
+            if (val) {
+                allKeys.push(val);
+                keyDates[val] = el.getAttribute('data-created') || 'Unknown';
+            }
         });
         
         let extraText = extraKeysInput.value;
@@ -116,7 +132,10 @@ document.addEventListener('DOMContentLoaded', function() {
             let extraArr = extraText.split(/[\n,]+/);
             extraArr.forEach(k => {
                 let clean = k.trim();
-                if (clean) allKeys.push(clean);
+                if (clean) {
+                    allKeys.push(clean);
+                    if (!keyDates[clean]) keyDates[clean] = 'N/A';
+                }
             });
         }
         
@@ -132,10 +151,15 @@ document.addEventListener('DOMContentLoaded', function() {
         isTesting = true;
         totalKeys = allKeys.length;
         testedKeys = 0;
+        successKeys = 0;
+        
         startBtn.classList.add('d-none');
         stopBtn.classList.remove('d-none');
+        statsCard.classList.remove('d-none');
         progressBadge.textContent = `0 / ${totalKeys}`;
         progressBadge.className = 'badge bg-primary';
+        successCounter.textContent = `0 / ${totalKeys}`;
+        
         resultsBody.innerHTML = ''; // clear table
         
         // 3. Obtain CSRF Token for the initial POST jump-start
@@ -149,7 +173,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     'X-CSRFToken': csrfToken
                 },
                 body: JSON.stringify({
-                    keys: allKeys,
+                    keys: allKeys.map(k => ({ key: k, created_at: keyDates[k] })),
                     proxy_id: proxySelect.value
                 })
             });
@@ -190,6 +214,11 @@ document.addEventListener('DOMContentLoaded', function() {
                                     testedKeys++;
                                     progressBadge.textContent = `${testedKeys} / ${totalKeys}`;
                                     
+                                    if (payload.status === 'Valid') {
+                                        successKeys++;
+                                    }
+                                    successCounter.textContent = `${successKeys} / ${totalKeys}`;
+                                    
                                     // Build row
                                     const tr = document.createElement('tr');
                                     let badgeClass = 'bg-secondary';
@@ -198,6 +227,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                     if (payload.status === 'Error') badgeClass = 'bg-warning text-dark';
                                     
                                     tr.innerHTML = `
+                                        <td class="text-nowrap text-muted"><small>${payload.created_at}</small></td>
                                         <td><code>${payload.key}</code></td>
                                         <td><span class="badge ${badgeClass}">${payload.status}</span></td>
                                         <td><small class="text-muted">${payload.response}</small></td>
