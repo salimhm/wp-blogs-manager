@@ -290,8 +290,8 @@ def manage_api_keys(request, site_id):
                     added_count = 0
                     skipped_count = 0
                     for k in keys:
-                        # Prevent cross-site duplication
-                        if APIKey.objects.filter(api_key=k).exclude(site=site).exists():
+                        # Prevent duplication anywhere in the database
+                        if APIKey.objects.filter(api_key=k).exists():
                             skipped_count += 1
                             continue
                             
@@ -307,11 +307,11 @@ def manage_api_keys(request, site_id):
                     if added_count > 0:
                         messages.success(request, f'Successfully added {added_count} {provider.title()} API keys.')
                     if skipped_count > 0:
-                        messages.error(request, f'Skipped {skipped_count} keys because they are already used by other sites.')
+                        messages.error(request, f'Skipped {skipped_count} keys because they already exist in the database.')
             elif api_key:
-                # Prevent cross-site duplication
-                if APIKey.objects.filter(api_key=api_key).exclude(site=site).exists():
-                    messages.error(request, 'This API key is already in use by another site.')
+                # Prevent duplication anywhere in the database
+                if APIKey.objects.filter(api_key=api_key).exists():
+                    messages.error(request, 'This API key already exists in the database.')
                 else:
                     APIKey.objects.create(
                         site=site,
