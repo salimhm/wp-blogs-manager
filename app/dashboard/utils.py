@@ -575,12 +575,18 @@ def call_groq_with_fallback(api_keys: list, prompt: str, max_tokens: int = 8000,
     Call Groq API with robust multi-key, multi-model fallback and strict rate-limit handling.
     Creates a new connection per request to ensure rotating proxies assign a new IP.
     """
-    max_retries = len(api_keys) * len(GROQ_MODELS) * 2
+    import random
+    
+    # Shuffle keys for true load balancing across concurrent background workers
+    api_keys_copy = list(api_keys)
+    random.shuffle(api_keys_copy)
+    
+    max_retries = len(api_keys_copy) * len(GROQ_MODELS) * 2
     
     for retry in range(max_retries):
         errors = []
         
-        for config in api_keys:
+        for config in api_keys_copy:
             if not config.get('is_active') or config.get('provider') != 'groq':
                 continue
                 

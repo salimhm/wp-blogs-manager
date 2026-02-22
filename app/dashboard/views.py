@@ -287,7 +287,14 @@ def manage_api_keys(request, site_id):
             if bulk_keys:
                 keys = [k.strip() for k in bulk_keys.replace('\r', '').split('\n') if k.strip()]
                 if keys:
+                    added_count = 0
+                    skipped_count = 0
                     for k in keys:
+                        # Prevent cross-site duplication
+                        if APIKey.objects.filter(api_key=k).exclude(site=site).exists():
+                            skipped_count += 1
+                            continue
+                            
                         APIKey.objects.create(
                             site=site,
                             provider=provider,
@@ -295,16 +302,25 @@ def manage_api_keys(request, site_id):
                             model_name=model_name,
                             is_active=True
                         )
-                    messages.success(request, f'Successfully added {len(keys)} {provider.title()} API keys.')
+                        added_count += 1
+                        
+                    if added_count > 0:
+                        messages.success(request, f'Successfully added {added_count} {provider.title()} API keys.')
+                    if skipped_count > 0:
+                        messages.error(request, f'Skipped {skipped_count} keys because they are already used by other sites.')
             elif api_key:
-                APIKey.objects.create(
-                    site=site,
-                    provider=provider,
-                    api_key=api_key,
-                    model_name=model_name,
-                    is_active=True
-                )
-                messages.success(request, f'{provider.title()} API key saved')
+                # Prevent cross-site duplication
+                if APIKey.objects.filter(api_key=api_key).exclude(site=site).exists():
+                    messages.error(request, 'This API key is already in use by another site.')
+                else:
+                    APIKey.objects.create(
+                        site=site,
+                        provider=provider,
+                        api_key=api_key,
+                        model_name=model_name,
+                        is_active=True
+                    )
+                    messages.success(request, f'{provider.title()} API key saved')
         
         return redirect('dashboard:manage_api_keys', site_id=site_id)
     
