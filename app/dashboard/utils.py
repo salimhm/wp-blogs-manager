@@ -688,7 +688,10 @@ def call_groq_with_fallback(api_keys: list, prompt: str, max_tokens: int = 8000,
                         continue
                         
                     # If we get here, it's a non-200 and non-rate-limit error
-                    print(f"Groq returned {response.status_code}: {response.text}")
+                    error_text = response.text
+                    if len(error_text) > 300:
+                        error_text = error_text[:300] + "... [TRUNCATED]"
+                    print(f"Groq returned {response.status_code}: {error_text}")
                     response.raise_for_status()
                     
                 except Exception as e:
