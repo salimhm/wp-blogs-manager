@@ -353,3 +353,41 @@ def create_pending_articles_task(site_id, keyword_list_id, selected_indices=None
     
     return f"Created {created} pending articles, skipped {skipped} existing"
 
+
+@shared_task
+def auto_resume_stalled_runs():
+    """
+    Heartbeat task to recover Daily Runs that were paused/killed by a Redis disconnect crash.
+    Runs every 30 minutes. If a run hasn't finished, but hasn't generated an article in 30+ minutes,
+    it re-triggers the scheduler.
+    """
+    from .models import DailyRun, Article
+    from django.utils import timezone
+    import datetime
+
+    stalled_threshold = timezone.now() - datetime.timedelta(minutes=30)
+    running_runs = DailyRun.objects.filter(status='running')
+    
+    recovered_count = 0
+    for run in running_runs:
+        # Determine if the run actually still needs articles
+        needed = run.target_count - run.completed_count
+        if needed <= 0:
+            run.status = 'completed'
+            run.save(update_fields=['status'])
+            continue
+            
+        # Check the last time an Article for this run was updated/created
+        latest_article = Article.objects.filter(daily_run=run).order_by('-updated_at').first()
+        
+        # If no articles were ever created, OR the last activity was > 30 mins ago, it's stalled.
+        if not latest_article or latest_article.updated_at < stalled_threshold:
+            print(f"[AUTO-RECOVERY] Run {run.id} for {run.site.domain} appears stalled for 30+ mins. Resuming...")
+            
+            # This mathematically re-evaluates the needed target and schedules replacement ETAs
+            from .tasks import process_daily_run
+            process_daily_run.delay(run.id)
+            recovered_count += 1
+            
+    return f"Recovered {recovered_count} stalled runs"
+
