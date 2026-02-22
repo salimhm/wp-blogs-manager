@@ -729,7 +729,7 @@ def generate_article_content(h2s: list, api_keys: list, proxy: Optional[dict] = 
 {h2_list}
 
 REQUIREMENTS:
-1. Write an engaging title (50-70 characters).
+1. Write a highly engaging, SEO-optimized title formatted as a comprehensive "How-To" guide or an informative, solution-oriented headline. It must be catchy and directly address the user's search intent based on the headings. Do not use generic encyclopedic titles (e.g., instead of "Safe Coloring for Canines", output "How to Safely Dye Your Dog's Hair: A Complete Guide").
 2. Write an introduction (2-3 paragraphs) that hooks the reader.
 3. Provide exactly 5-7 key takeaways (brief, actionable sentences).
 4. Write extensive body sections based on the topics. Each section should be {para_req}.
