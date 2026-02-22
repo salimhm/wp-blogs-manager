@@ -23,7 +23,7 @@
                     <!-- Invisible store for DB keys -->
                     <div id="dbKeys" style="display:none;">
                         {% for key in api_keys %}
-                            <input type="hidden" class="db-key-value" value="{{ key.api_key }}" data-created="{{ key.created_at|date:'M j, Y' }}">
+                            <input type="hidden" class="db-key-value" value="{{ key.api_key }}" data-created="{{ key.created_at|date:'M j, Y g:i A' }}">
                         {% endfor %}
                     </div>
 
