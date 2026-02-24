@@ -39,6 +39,7 @@ def process_daily_run(run_id):
     if current_time >= end_dt:
         run.status = 'completed'
         run.save()
+        _auto_schedule_next_run(run)
         return "Time window passed"
 
     # 2. Get keywords from the selected list
@@ -54,6 +55,7 @@ def process_daily_run(run_id):
     if needed <= 0:
         run.status = 'completed'
         run.save()
+        _auto_schedule_next_run(run)
         return "Target reached"
 
     # Calculate interval
@@ -69,7 +71,29 @@ def process_daily_run(run_id):
     # Schedule tasks
     scheduled_count = 0
     
-    # Iterate through keyword lists and pick sequential indexes not yet in Article table
+    # 1. First, re-schedule any existing pending tasks for this site that were paused
+    pending_articles = Article.objects.filter(
+        site=run.site,
+        status='pending'
+    ).order_by('id')
+    
+    for p_article in pending_articles:
+        if scheduled_count >= needed:
+            break
+        
+        # Link to current run
+        if p_article.daily_run != run:
+            p_article.daily_run = run
+            p_article.save(update_fields=['daily_run'])
+            
+        eta = start_dt + datetime.timedelta(seconds=scheduled_count * interval_seconds)
+        generate_single_article.apply_async(
+            args=[p_article.id, run.id], 
+            eta=eta
+        )
+        scheduled_count += 1
+        
+    # 2. Iterate through keyword lists and pick sequential indexes not yet in Article table
     for k_list in keyword_lists:
         if scheduled_count >= needed:
             break
@@ -99,6 +123,7 @@ def process_daily_run(run_id):
                 keyword_list=k_list,
                 keyword_index=idx,
                 status='pending',
+                daily_run=run,
                 title=f"Pending Generation {idx}"
             )
             
@@ -139,26 +164,12 @@ def generate_single_article(self, article_id, run_id=None):
                 print(f"[SKIP] Run cancelled, skipping article {article_id}")
                 return "Run cancelled"
             
-            # Paused = wait for resume (check every 30s, up to 10 min)
+            # Paused = exit cleanly so workers are not locked. 
+            # `process_daily_run` will pick this pending article back up when resumed.
             if run.status == 'paused':
-                import time
-                max_wait = 600  # 10 minutes
-                waited = 0
-                while waited < max_wait:
-                    print(f"[WAIT] Run paused, article {article_id} waiting for resume...")
-                    time.sleep(30)
-                    waited += 30
-                    run.refresh_from_db()
-                    if run.status == 'running':
-                        print(f"[RESUME] Run resumed, continuing article {article_id}")
-                        break
-                    elif run.status == 'cancelled':
-                        print(f"[SKIP] Run cancelled while waiting, skipping article {article_id}")
-                        return "Run cancelled"
-                else:
-                    # Still paused after max wait
-                    print(f"[SKIP] Run still paused after {max_wait}s, skipping article {article_id}")
-                    return "Run paused too long"
+                print(f"[SKIP] Run paused. Leaving article {article_id} as pending. Exiting worker cleanly.")
+                # We do NOT change article.status here. It remains 'pending'.
+                return "Run paused"
             
             # Explicitly link run if not already
             if not article.daily_run:
@@ -264,10 +275,16 @@ def generate_single_article(self, article_id, run_id=None):
                 article.published_at = timezone.now()
                 article.save()
                 
-                # Update Run Stats
+                 # Update Run Stats
                 if run:
                     run.completed_count += 1
                     run.save()
+                    
+                    # Check if run is fully completed
+                    if run.completed_count >= run.target_count:
+                        run.status = 'completed'
+                        run.save()
+                        _auto_schedule_next_run(run)
                     
                 # Log success
                 SiteLog.objects.create(
@@ -391,3 +408,72 @@ def auto_resume_stalled_runs():
             
     return f"Recovered {recovered_count} stalled runs"
 
+
+@shared_task
+def schedule_tomorrow_run(site_id, keyword_list_id, target_count, start_time_str, end_time_str):
+    """Triggered exactly at start_time the next day to spin up a cloned DailyRun."""
+    from .models import DailyRun
+    
+    run = DailyRun.objects.create(
+        site_id=site_id,
+        keyword_list_id=keyword_list_id,
+        target_count=target_count,
+        start_time=start_time_str,
+        end_time=end_time_str,
+        status='running'
+    )
+    
+    from .tasks import process_daily_run
+    process_daily_run.delay(run.id)
+    return f"Auto-created tomorrow's run for site {site_id}"
+
+
+def _auto_schedule_next_run(completed_run):
+    """Checks if there are still keywords left, and if so, schedules tomorrow's run."""
+    from .models import Article, DailyRun
+    import datetime
+    
+    kl = completed_run.keyword_list
+    if not kl:
+        return
+        
+    generated_count = Article.objects.filter(
+        site=completed_run.site,
+        keyword_list=kl
+    ).count()
+    
+    # All keywords consumed
+    if generated_count >= kl.item_count:
+        return
+        
+    # Check if a future run is already queued/running to avoid duplicates
+    existing_future = DailyRun.objects.filter(
+        site=completed_run.site,
+        keyword_list=kl,
+        status__in=['running', 'paused']
+    ).exists()
+    
+    if existing_future:
+        return
+        
+    # Calculate exactly when tomorrow's run should start
+    now = timezone.now()
+    today = now.date()
+    tomorrow = today + datetime.timedelta(days=1)
+    
+    next_start_dt = datetime.datetime.combine(tomorrow, completed_run.start_time).replace(tzinfo=datetime.timezone.utc)
+    
+    # If next_start_dt is in the past (e.g. timezone overlap), ensure it's in the future
+    if next_start_dt < now:
+        next_start_dt += datetime.timedelta(days=1)
+        
+    schedule_tomorrow_run.apply_async(
+        args=[
+            completed_run.site.id, 
+            kl.id, 
+            completed_run.target_count, 
+            completed_run.start_time.strftime('%H:%M'), 
+            completed_run.end_time.strftime('%H:%M')
+        ],
+        eta=next_start_dt
+    )

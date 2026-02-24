@@ -551,14 +551,16 @@ GROQ_MODELS = [
 ]
 
 # Track when an API key + model will be available again
-# Format: { ('api_key', 'model_name'): timestamp_when_available }
-API_KEY_MODEL_COOLDOWNS = {}
+from django.core.cache import cache
 
 def get_cooldown(api_key: str, model: str) -> float:
-    return max(0, API_KEY_MODEL_COOLDOWNS.get((api_key, model), 0) - time.time())
+    cache_key = f"cooldown_{api_key}_{model}"
+    timestamp_when_available = cache.get(cache_key, 0)
+    return max(0, timestamp_when_available - time.time())
 
 def set_cooldown(api_key: str, model: str, wait_time: float):
-    API_KEY_MODEL_COOLDOWNS[(api_key, model)] = time.time() + wait_time
+    cache_key = f"cooldown_{api_key}_{model}"
+    cache.set(cache_key, time.time() + wait_time, timeout=int(wait_time) + 60)
 
 def _clean_llm_content(content: str) -> str:
     content = content.strip()

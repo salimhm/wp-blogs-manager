@@ -93,3 +93,4 @@ backup_clean.sql
 *.sql
 groq_keys.txt
 test_article.py
+logs*
