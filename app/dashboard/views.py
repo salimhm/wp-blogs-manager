@@ -1391,8 +1391,31 @@ def pause_daily_run(request, site_id, run_id):
     if run.status == 'running':
         run.status = 'paused'
         run.save()
-        print(f"[PAUSE] Daily run {run.id} for site {site.domain} paused by user")
-        messages.info(request, 'Daily run paused. New articles will not start. You can resume anytime.')
+        
+        # Revoke currently queued & generating tasks to stop immediately
+        from app.celery import app as celery_app
+        from .models import Article
+        
+        active_articles = Article.objects.filter(
+            daily_run=run,
+            status__in=['generating', 'pending']
+        ).exclude(task_id='')
+        
+        killed_count = 0
+        for article in active_articles:
+            try:
+                # Terminate running worker
+                celery_app.control.revoke(article.task_id, terminate=True, signal='SIGTERM')
+                # Revert article to pending so it can be resumed later cleanly
+                if article.status == 'generating':
+                    article.status = 'pending'
+                    article.save(update_fields=['status'])
+                killed_count += 1
+            except Exception as e:
+                print(f"Failed to kill task {article.task_id}: {e}")
+                
+        print(f"[PAUSE] Daily run {run.id} for site {site.domain} paused by user. Terminated {killed_count} active/queued workers.")
+        messages.info(request, f'Daily run paused. {killed_count} active/queued task(s) forcibly stopped. New articles will not start. You can resume anytime.')
     
     return redirect('dashboard:daily_run_status', site_id=site_id, run_id=run.run_number)
 

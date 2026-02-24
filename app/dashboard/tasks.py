@@ -81,16 +81,16 @@ def process_daily_run(run_id):
         if scheduled_count >= needed:
             break
         
-        # Link to current run
-        if p_article.daily_run != run:
-            p_article.daily_run = run
-            p_article.save(update_fields=['daily_run'])
-            
         eta = start_dt + datetime.timedelta(seconds=scheduled_count * interval_seconds)
-        generate_single_article.apply_async(
+        task = generate_single_article.apply_async(
             args=[p_article.id, run.id], 
             eta=eta
         )
+        p_article.task_id = str(task.id)
+        # Assuming we check `daily_run_id` as well later
+        p_article.daily_run = run
+        p_article.save(update_fields=['daily_run', 'task_id'])
+        
         scheduled_count += 1
         
     # 2. Iterate through keyword lists and pick sequential indexes not yet in Article table
@@ -130,10 +130,12 @@ def process_daily_run(run_id):
             # Schedule execution
             eta = start_dt + datetime.timedelta(seconds=scheduled_count * interval_seconds)
             
-            generate_single_article.apply_async(
+            task = generate_single_article.apply_async(
                 args=[article.id, run.id], 
                 eta=eta
             )
+            article.task_id = str(task.id)
+            article.save(update_fields=['task_id'])
             
             scheduled_count += 1
             existing_set.add(idx)
@@ -148,6 +150,11 @@ def generate_single_article(self, article_id, run_id=None):
     """
     try:
         article = Article.objects.get(id=article_id)
+        
+        # Check for idempotency: if it isn't pending, it was already handled or is running
+        if article.status != 'pending':
+            print(f"[SKIP] Article {article_id} is '{article.status}'. Skipping duplicate execution.")
+            return f"Already {article.status}"
         
         # Save Task ID for Force Kill
         if self.request.id:
