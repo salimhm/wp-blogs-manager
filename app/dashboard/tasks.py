@@ -18,29 +18,40 @@ def process_daily_run(run_id):
     if run.status != 'running':
         return f"DailyRun {run_id} is {run.status}, stopping."
 
-    # 1. Calculate time window
+    # 1. Calculate time window natively linked to when the run was created.
+    # This prevents the window from "shifting forward" if the run is resumed on a later date.
     now = timezone.now()
-    today = now.date()
+    base_date = run.created_at.astimezone(datetime.timezone.utc).date()
+    # Combine the base date with start/end times
+    start_dt = datetime.datetime.combine(base_date, run.start_time).replace(tzinfo=datetime.timezone.utc)
+    end_dt = datetime.datetime.combine(base_date, run.end_time).replace(tzinfo=datetime.timezone.utc)
     
-    # Combine today's date with start/end times
-    start_dt = datetime.datetime.combine(today, run.start_time).replace(tzinfo=datetime.timezone.utc)
-    end_dt = datetime.datetime.combine(today, run.end_time).replace(tzinfo=datetime.timezone.utc)
-    
-    # If end time is before start time, assume it's the next day (e.g. 23:00 to 02:00)
-    if end_dt < start_dt:
+    # If end time is logically "earlier" in the clock than start time, it means the window crosses midnight.
+    if run.end_time < run.start_time:
         end_dt += datetime.timedelta(days=1)
-        
-    # If we're already past the end time, schedule for "now" or stop? 
-    # Let's assume we fit them in the remaining time or just spread them out from "now"
-    current_time = timezone.now()
-    if current_time > start_dt:
-        start_dt = current_time
-        
-    if current_time >= end_dt:
+        # Handle case where user manually creates a run in the early morning hours 
+        # (e.g., 1AM) while intending to run in the preceding 23:00 to 02:00 window.
+        if now.time() <= run.end_time and now.time() >= run.start_time:
+            pass # Explicit future scheduling
+        elif now.time() < run.start_time and now.time() < run.end_time and base_date == now.date():
+            # If created at 1 AM for a 23:00->02:00 window, the user likely meant "right now"
+            # so we shift the start_dt to yesterday to place 'now' inside the window.
+            start_dt -= datetime.timedelta(days=1)
+            end_dt -= datetime.timedelta(days=1)
+
+    # If the absolute end boundary has passed, immediately end the run.
+    if now >= end_dt:
         run.status = 'completed'
-        run.save()
+        run.save(update_fields=['status'])
         _auto_schedule_next_run(run)
         return "Time window passed"
+
+    # Important Resume Logic:
+    # If we are partway into the window (e.g. paused & resumed, or restarting a crashed container),
+    # we must squeeze the remaining needed tasks into the *remaining* time window smoothly.
+    # Therefore, we override start_dt to 'now'.
+    if now > start_dt:
+        start_dt = now
 
     # 2. Get keywords from the selected list
     # If a specific keyword list was selected, use only that one
