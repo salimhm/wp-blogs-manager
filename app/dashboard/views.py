@@ -1277,30 +1277,66 @@ def start_daily_run(request, site_id):
         # Remaining = total keywords - articles already created for this site
         remaining = max(0, total_keywords - site_articles_count)
         
+        keyword_lists.append({
+            'id': kl.id,
+            'name': kl.name,
+            'total_keywords': total_keywords,
+            'site_articles': site_articles_count,
+            'remaining': remaining,
+            'created_at': kl.created_at
+        })
+        
     # Fetch or Create Automation Settings
     from .models import SiteAutomation
     automation, _ = SiteAutomation.objects.get_or_create(site=site)
     
     if request.method == 'POST':
-        target_count = request.POST.get('target_count', 10)
         keyword_list_id = request.POST.get('keyword_list')
-        start_time_str = request.POST.get('start_time', '05:00')
-        end_time_str = request.POST.get('end_time', '01:00')
         is_enabled = request.POST.get('is_enabled') == 'on'
         
         try:
-            automation.target_count = int(target_count)
             automation.keyword_list_id = keyword_list_id if keyword_list_id else None
-            automation.start_time = start_time_str
-            automation.end_time = end_time_str
             automation.is_enabled = is_enabled
-            automation.save()
             
+            if 'run_now' in request.POST:
+                from .models import DailyRun
+                from .tasks import process_daily_run
+                from django.utils import timezone
+                import datetime
+                
+                now = timezone.now()
+                target_count = active_keys_count * 132
+                
+                # Force the next background beat to happen exactly 24 hours from this second
+                automation.next_run_time = now + datetime.timedelta(hours=24)
+                
+                start_time_str = now.strftime('%H:%M')
+                end_dt_20h = now + datetime.timedelta(hours=20)
+                end_time_str = end_dt_20h.strftime('%H:%M')
+                
+                automation.save()
+                
+                if target_count > 0:
+                    run = DailyRun.objects.create(
+                        site=automation.site,
+                        keyword_list=automation.keyword_list,
+                        target_count=target_count,
+                        start_time=start_time_str,
+                        end_time=end_time_str,
+                        status='running'
+                    )
+                    process_daily_run.delay(run.id)
+                    messages.success(request, f'Automation Saved. Started 24-Hour Cycle ({target_count} articles)!')
+                    return redirect('dashboard:daily_run_status', site_id=site.id, run_id=run.run_number)
+                else:
+                    messages.error(request, 'You must add API Keys before generating articles.')
+                    return redirect('dashboard:site_detail', site_id=site.id)
+            
+            # If standard save:
+            automation.save()
             messages.success(request, 'Automation settings updated successfully!')
             return redirect('dashboard:site_detail', site_id=site.id)
             
-        except ValueError:
-            messages.error(request, 'Invalid target count')
         except Exception as e:
             messages.error(request, f'Error: {str(e)}')
             

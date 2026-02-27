@@ -41,22 +41,6 @@
                             <span class="form-hint">Choose which keyword list to generate articles from.</span>
                         </div>
                         
-                        <div class="form-group">
-                            <label for="target_count" class="form-label">Target Article Count</label>
-                            <input type="number" class="form-input" id="target_count" name="target_count" value="{{ automation.target_count }}" min="1" required>
-                            <span class="form-hint">How many articles do you want to generate per day?</span>
-                        </div>
-
-                        <div class="row">
-                            <div class="col-md-6 form-group">
-                                <label for="start_time" class="form-label">Start Time (UTC)</label>
-                                <input type="time" class="form-input" id="start_time" name="start_time" value="{{ automation.start_time|time:'H:i' }}" required>
-                            </div>
-                            <div class="col-md-6 form-group">
-                                <label for="end_time" class="form-label">End Time (UTC)</label>
-                                <input type="time" class="form-input" id="end_time" name="end_time" value="{{ automation.end_time|time:'H:i' }}" required>
-                            </div>
-                        </div>
                     </div>
                     
                     {% if active_keys_count > 0 %}
@@ -64,7 +48,7 @@
                         <div style="flex: 1">
                             <strong><i class="bi bi-info-circle"></i> Daily Capacity Estimate</strong>
                             <p class="mb-0 mt-1 small" style="opacity: 0.9">
-                                Based on your <strong>{{ active_keys_count }} active Groq API keys</strong>, this site can comfortably generate up to <strong style="cursor: pointer; text-decoration: underline;" onclick="document.getElementById('target_count').value = '{{ estimated_capacity }}';" title="Click to fill target count">{{ estimated_capacity }} highly-detailed SEO articles per day</strong> without hitting the 600K token ceilings.
+                                Based on your <strong>{{ active_keys_count }} active Groq API keys</strong>, this site will currently generate <strong>{{ estimated_capacity }} highly-detailed SEO articles per day</strong> without hitting the 600K token ceilings.
                             </p>
                         </div>
                     </div>
@@ -81,19 +65,27 @@
                     
                     <div class="alert alert-info mt-4">
                         <div style="flex: 1">
-                            <strong><i class="bi bi-clock-history"></i> Automatic Scheduling</strong>
+                            <strong><i class="bi bi-clock-history"></i> Automatic 24-Hour Scaling</strong>
                             <p class="mb-0 mt-1 small" style="opacity: 0.9">
-                                The system checks automations every 10 minutes. 
-                                When the <strong>Start Time</strong> arrives and the auto-pilot is <strong>enabled</strong>, it will automatically pace your Target Count seamlessly until the End Time.
+                                The orchestrator operates in exact 24-hour cycles. Every time a cycle begins, it dynamically counts your active Groq keys to calculate maximum possible output.
+                                {% if automation.next_run_time %}
+                                <br><br>The next automated cycle is scheduled to fire at: <strong>{{ automation.next_run_time|date:'Y-m-d H:i' }} UTC</strong>
+                                {% endif %}
                             </p>
                         </div>
                     </div>
 
                     <div class="form-actions">
-                        <button type="submit" class="btn btn-primary btn-lg" style="width: 100%">
+                        <button type="submit" class="btn btn-primary btn-lg mb-3" style="width: 100%">
                             <span class="btn-icon">💾</span>
-                            <span class="btn-text">Save Automation Settings</span>
-                            <span class="btn-desc">Applies configuration for background auto-pilot</span>
+                            <span class="btn-text">Save Toggle & Wait For Next Cycle</span>
+                            <span class="btn-desc">Saves settings without disrupting the current countdown</span>
+                        </button>
+                        
+                        <button type="submit" name="run_now" value="true" class="btn btn-success btn-lg" style="width: 100%">
+                            <span class="btn-icon">🚀</span>
+                            <span class="btn-text">Save & Start Cycle Now</span>
+                            <span class="btn-desc">Generates articles now & sets next trigger 24 hours from this exact second</span>
                         </button>
                     </div>
                 </form>

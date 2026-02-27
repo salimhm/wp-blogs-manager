@@ -446,62 +446,62 @@ def schedule_tomorrow_run(*args, **kwargs):
 def check_site_automations():
     """
     Periodic task (e.g. every 10 mins).
-    Evaluates all active SiteAutomations and triggers process_daily_run if inside their time window.
+    Evaluates all active SiteAutomations. If 'next_run_time' has passed, 
+    it recalculates the daily quota natively and launches a 20-hour run, 
+    pushing the next trigger out by 24 hours.
     """
-    from .models import SiteAutomation, DailyRun, Article
+    from .models import SiteAutomation, DailyRun
     from django.utils import timezone
     import datetime
 
     now = timezone.now()
-    today = now.date()
-    
     automations = SiteAutomation.objects.filter(is_enabled=True)
     triggered_count = 0
     
     for auto in automations:
-        # If it already ran today, skip
-        if auto.last_run_date == today:
+        # If next_run_time is set and in the future, we just wait.
+        if auto.next_run_time and now < auto.next_run_time:
             continue
             
-        print(f"[Auto-Pilot] Checking {auto.site.domain} (Target: {auto.target_count}, Window: {auto.start_time} - {auto.end_time})")
+        print(f"[Auto-Pilot 24H] Triggering cycle for {auto.site.domain}.")
         
-        # Determine if 'now' is within the designated window.
-        # Window logic: start_time to end_time.
-        # If end_time < start_time, it crosses midnight.
-        is_in_window = False
+        # 1. Dynamically calculate the quota based on the number of active API keys RIGHT NOW.
+        active_keys_count = auto.site.api_keys.filter(is_active=True, provider='groq').count()
+        if active_keys_count == 0:
+            print(f"[Auto-Pilot 24H] {auto.site.domain} has 0 active API keys. Skipping run.")
+            # We defer checking again for a short duration (e.g. 1 hour) so we don't spam.
+            auto.next_run_time = now + datetime.timedelta(hours=1)
+            auto.save(update_fields=['next_run_time'])
+            continue
+            
+        # Target count is: keys * 132
+        target_count = active_keys_count * 132
         
-        if auto.end_time < auto.start_time:
-            # Crosses midnight (e.g., 23:00 to 02:00)
-            if now.time() >= auto.start_time or now.time() < auto.end_time:
-                # If we are in the early morning part (< end_time), 
-                # technically this run "belonged" to yesterday's configuration.
-                # If we are in the evening part (>= start_time), it belongs to today.
-                is_in_window = True
-        else:
-            # Standard daytime window (e.g., 09:00 to 17:00)
-            if auto.start_time <= now.time() < auto.end_time:
-                is_in_window = True
-                
-        if is_in_window:
-            print(f"[Auto-Pilot] Window is ACTIVE for {auto.site.domain}. Triggering run.")
-            
-            # Update last_run_date before actually creating to prevent duplicate rapid-fires 
-            # if Beat triggers multiple times simultaneously (though Celery Beat should prevent this).
-            auto.last_run_date = today
-            auto.save(update_fields=['last_run_date'])
-            
-            # Create the Daily Run log
-            run = DailyRun.objects.create(
-                site=auto.site,
-                keyword_list=auto.keyword_list,
-                target_count=auto.target_count,
-                start_time=auto.start_time,
-                end_time=auto.end_time,
-                status='running'
-            )
-            
-            # Trigger the orchestrator immediately
-            process_daily_run.delay(run.id)
-            triggered_count += 1
+        # 2. DailyRun boundaries are now to now+20h
+        start_time_str = now.strftime('%H:%M')
+        
+        # End time is 20 hours from now
+        end_dt_20h = now + datetime.timedelta(hours=20)
+        end_time_str = end_dt_20h.strftime('%H:%M')
+        
+        # Create the Daily Run log
+        run = DailyRun.objects.create(
+            site=auto.site,
+            keyword_list=auto.keyword_list,
+            target_count=target_count,
+            start_time=start_time_str,
+            end_time=end_time_str,
+            status='running'
+        )
+        
+        # 3. Push the automation's next run out by exactly 24 hours
+        # If it was significantly overdue, we anchor to NOW to prevent immediate cascading runs.
+        auto.next_run_time = now + datetime.timedelta(hours=24)
+        auto.save(update_fields=['next_run_time'])
+        
+        # Trigger the orchestrator immediately
+        from .tasks import process_daily_run
+        process_daily_run.delay(run.id)
+        triggered_count += 1
             
     return f"Triggered {triggered_count} automations"

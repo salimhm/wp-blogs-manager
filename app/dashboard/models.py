@@ -240,17 +240,14 @@ class DailyRun(models.Model):
 
 
 class SiteAutomation(models.Model):
-    """Persistent configuration for automated Daily Runs."""
+    """Persistent configuration for automated 24-hour Daily Runs."""
     site = models.OneToOneField(Site, on_delete=models.CASCADE, related_name='automation')
     is_enabled = models.BooleanField(default=False, help_text="Is auto-pilot turned on?")
     
     keyword_list = models.ForeignKey('KeywordList', on_delete=models.SET_NULL, null=True, blank=True,
                                      help_text="Keyword list to use for generation")
-    target_count = models.IntegerField(default=10, help_text="Articles to generate per day")
-    start_time = models.TimeField(default='05:00', help_text="Time to start generating articles (UTC)")
-    end_time = models.TimeField(default='01:00', help_text="Time to finish generating articles (UTC)")
     
-    last_run_date = models.DateField(null=True, blank=True, help_text="The date of the last triggered automated run")
+    next_run_time = models.DateTimeField(null=True, blank=True, help_text="The exact time when the next 24-hour cycle should fire.")
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
