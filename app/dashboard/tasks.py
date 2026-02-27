@@ -293,10 +293,16 @@ def generate_single_article(self, article_id, run_id=None):
                 article.published_at = timezone.now()
                 article.save()
                 
-                 # Update Run Stats
+                 # Update Run Stats atomically to prevent concurrent worker race conditions
                 if run:
-                    run.completed_count += 1
-                    run.save()
+                    from django.db.models import F
+                    # Fetch fresh to avoid overwriting state
+                    # We must use F() expression because 20 workers could all read "15" at once 
+                    # and all save "16", losing 19 counts.
+                    DailyRun.objects.filter(id=run.id).update(completed_count=F('completed_count') + 1)
+                    
+                    # Refresh run instance from DB to check if complete
+                    run.refresh_from_db()
                     
                     # Check if run is fully completed
                     if run.completed_count >= run.target_count:
@@ -324,10 +330,10 @@ def generate_single_article(self, article_id, run_id=None):
         article.error_message = str(e)
         article.save()
         
-        # Update Run Stats
+        # Update Run Stats atomically
         if run:
-            run.failed_count += 1
-            run.save()
+            from django.db.models import F
+            DailyRun.objects.filter(id=run.id).update(failed_count=F('failed_count') + 1)
             
         SiteLog.objects.create(
             site=site,
