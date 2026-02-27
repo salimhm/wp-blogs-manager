@@ -1292,6 +1292,10 @@ def start_daily_run(request, site_id):
     from .models import SiteAutomation
     automation, _ = SiteAutomation.objects.get_or_create(site=site)
     
+    # Calculate capacity safely based on tokens/article limit
+    active_keys_count = site.api_keys.filter(is_active=True, provider='groq').count()
+    estimated_capacity = active_keys_count * 132
+
     if request.method == 'POST':
         keyword_list_id = request.POST.get('keyword_list')
         is_enabled = request.POST.get('is_enabled') == 'on'
@@ -1341,10 +1345,6 @@ def start_daily_run(request, site_id):
             
         except Exception as e:
             messages.error(request, f'Error: {str(e)}')
-            
-    # Calculate capacity safely based on tokens/article limit
-    active_keys_count = site.api_keys.filter(is_active=True, provider='groq').count()
-    estimated_capacity = active_keys_count * 132
             
     return render(request, 'dashboard/daily_runs/start.html', {
         'site': site,
