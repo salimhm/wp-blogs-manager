@@ -38,7 +38,7 @@
                 <!-- Circular Progress or Large Text -->
                 <div class="mb-4">
                     <span style="font-size: 64px; font-weight: 700; background: var(--accent-gradient); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;">
-                        {{ run.completed_count }}
+                        {{ completed_count }}
                     </span>
                     <span class="text-muted h3">/ {{ run.target_count }}</span>
                 </div>
@@ -50,11 +50,11 @@
                 
                 <div class="stats-grid" style="margin-bottom: 0;">
                     <div class="stat-card justify-content-center flex-column text-center">
-                        <span class="stat-value text-danger">{{ run.failed_count }}</span>
+                        <span class="stat-value text-danger">{{ failed_count }}</span>
                         <span class="stat-label">Failed</span>
                     </div>
                     <div class="stat-card justify-content-center flex-column text-center">
-                        <span class="stat-value">{{ run.target_count|add:"-"|add:run.completed_count|add:"-"|add:run.failed_count }}</span>
+                        <span class="stat-value">{{ run.target_count|add:"-"|add:completed_count|add:"-"|add:failed_count }}</span>
                         <span class="stat-label">Pending</span>
                     </div>
                     <div class="stat-card justify-content-center flex-column text-center">
@@ -98,7 +98,7 @@
         <!-- Articles Generated -->
         <div class="card">
             <div class="card-header">
-                <h2 class="card-title">Articles Generated ({{ articles.count }})</h2>
+                <h2 class="card-title">Articles Generated ({{ completed_count }})</h2>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
