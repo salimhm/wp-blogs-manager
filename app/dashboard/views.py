@@ -1266,10 +1266,12 @@ def start_daily_run(request, site_id):
     keyword_lists = []
     for kl in keyword_lists_raw:
         # Count how many articles from this list exist for THIS site
+        # BUT only count articles that have been published or are actively generating. 
+        # "Pending" articles haven't been generated yet and shouldn't count against remaining keywords.
         site_articles_count = Article.objects.filter(
             site=site,
             keyword_list=kl
-        ).count()
+        ).exclude(status='pending').count()
         
         # Total keywords in the list (use item_count field)
         total_keywords = kl.item_count or 0
