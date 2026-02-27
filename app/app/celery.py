@@ -10,10 +10,19 @@ app = Celery('app')
 # the configuration object to child processes.
 # - namespace='CELERY' means all celery-related configuration keys
 #   should have a `CELERY_` prefix.
+from celery.schedules import crontab
+
 app.config_from_object('django.conf:settings', namespace='CELERY')
 
 # Load task modules from all registered Django apps.
 app.autodiscover_tasks()
+
+app.conf.beat_schedule = {
+    'check-automations-every-10-mins': {
+        'task': 'dashboard.tasks.check_site_automations',
+        'schedule': crontab(minute='*/10'),
+    },
+}
 
 @app.task(bind=True)
 def debug_task(self):

@@ -427,71 +427,81 @@ def auto_resume_stalled_runs():
     return f"Recovered {recovered_count} stalled runs"
 
 
-@shared_task
-def schedule_tomorrow_run(site_id, keyword_list_id, target_count, start_time_str, end_time_str):
-    """Triggered exactly at start_time the next day to spin up a cloned DailyRun."""
-    from .models import DailyRun
-    
-    run = DailyRun.objects.create(
-        site_id=site_id,
-        keyword_list_id=keyword_list_id,
-        target_count=target_count,
-        start_time=start_time_str,
-        end_time=end_time_str,
-        status='running'
-    )
-    
-    from .tasks import process_daily_run
-    process_daily_run.delay(run.id)
-    return f"Auto-created tomorrow's run for site {site_id}"
-
-
 def _auto_schedule_next_run(completed_run):
-    """Checks if there are still keywords left, and if so, schedules tomorrow's run."""
-    from .models import Article, DailyRun
+    """
+    Deprecated. We now use SiteAutomation + check_site_automations periodic task.
+    Keeping function footprint empty to prevent import or zombie task errors 
+    if any older tasks still attempt to call it upon completion.
+    """
+    pass
+
+@shared_task
+def schedule_tomorrow_run(*args, **kwargs):
+    """
+    Deprecated in favor of SiteAutomation.
+    """
+    return "Deprecated"
+
+@shared_task
+def check_site_automations():
+    """
+    Periodic task (e.g. every 10 mins).
+    Evaluates all active SiteAutomations and triggers process_daily_run if inside their time window.
+    """
+    from .models import SiteAutomation, DailyRun, Article
+    from django.utils import timezone
     import datetime
-    
-    kl = completed_run.keyword_list
-    if not kl:
-        return
-        
-    generated_count = Article.objects.filter(
-        site=completed_run.site,
-        keyword_list=kl
-    ).count()
-    
-    # All keywords consumed
-    if generated_count >= kl.item_count:
-        return
-        
-    # Check if a future run is already queued/running to avoid duplicates
-    existing_future = DailyRun.objects.filter(
-        site=completed_run.site,
-        keyword_list=kl,
-        status__in=['running', 'paused']
-    ).exists()
-    
-    if existing_future:
-        return
-        
-    # Calculate exactly when tomorrow's run should start
+
     now = timezone.now()
     today = now.date()
-    tomorrow = today + datetime.timedelta(days=1)
     
-    next_start_dt = datetime.datetime.combine(tomorrow, completed_run.start_time).replace(tzinfo=datetime.timezone.utc)
+    automations = SiteAutomation.objects.filter(is_enabled=True)
+    triggered_count = 0
     
-    # If next_start_dt is in the past (e.g. timezone overlap), ensure it's in the future
-    if next_start_dt < now:
-        next_start_dt += datetime.timedelta(days=1)
+    for auto in automations:
+        # If it already ran today, skip
+        if auto.last_run_date == today:
+            continue
+            
+        print(f"[Auto-Pilot] Checking {auto.site.domain} (Target: {auto.target_count}, Window: {auto.start_time} - {auto.end_time})")
         
-    schedule_tomorrow_run.apply_async(
-        args=[
-            completed_run.site.id, 
-            kl.id, 
-            completed_run.target_count, 
-            completed_run.start_time.strftime('%H:%M'), 
-            completed_run.end_time.strftime('%H:%M')
-        ],
-        eta=next_start_dt
-    )
+        # Determine if 'now' is within the designated window.
+        # Window logic: start_time to end_time.
+        # If end_time < start_time, it crosses midnight.
+        is_in_window = False
+        
+        if auto.end_time < auto.start_time:
+            # Crosses midnight (e.g., 23:00 to 02:00)
+            if now.time() >= auto.start_time or now.time() < auto.end_time:
+                # If we are in the early morning part (< end_time), 
+                # technically this run "belonged" to yesterday's configuration.
+                # If we are in the evening part (>= start_time), it belongs to today.
+                is_in_window = True
+        else:
+            # Standard daytime window (e.g., 09:00 to 17:00)
+            if auto.start_time <= now.time() < auto.end_time:
+                is_in_window = True
+                
+        if is_in_window:
+            print(f"[Auto-Pilot] Window is ACTIVE for {auto.site.domain}. Triggering run.")
+            
+            # Update last_run_date before actually creating to prevent duplicate rapid-fires 
+            # if Beat triggers multiple times simultaneously (though Celery Beat should prevent this).
+            auto.last_run_date = today
+            auto.save(update_fields=['last_run_date'])
+            
+            # Create the Daily Run log
+            run = DailyRun.objects.create(
+                site=auto.site,
+                keyword_list=auto.keyword_list,
+                target_count=auto.target_count,
+                start_time=auto.start_time,
+                end_time=auto.end_time,
+                status='running'
+            )
+            
+            # Trigger the orchestrator immediately
+            process_daily_run.delay(run.id)
+            triggered_count += 1
+            
+    return f"Triggered {triggered_count} automations"

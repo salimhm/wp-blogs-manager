@@ -238,3 +238,27 @@ class DailyRun(models.Model):
     def __str__(self):
         return f"Run #{self.run_number}: {self.completed_count}/{self.target_count} ({self.get_status_display()})"
 
+
+class SiteAutomation(models.Model):
+    """Persistent configuration for automated Daily Runs."""
+    site = models.OneToOneField(Site, on_delete=models.CASCADE, related_name='automation')
+    is_enabled = models.BooleanField(default=False, help_text="Is auto-pilot turned on?")
+    
+    keyword_list = models.ForeignKey('KeywordList', on_delete=models.SET_NULL, null=True, blank=True,
+                                     help_text="Keyword list to use for generation")
+    target_count = models.IntegerField(default=10, help_text="Articles to generate per day")
+    start_time = models.TimeField(default='05:00', help_text="Time to start generating articles (UTC)")
+    end_time = models.TimeField(default='01:00', help_text="Time to finish generating articles (UTC)")
+    
+    last_run_date = models.DateField(null=True, blank=True, help_text="The date of the last triggered automated run")
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Site Automation"
+        verbose_name_plural = "Site Automations"
+
+    def __str__(self):
+        status = "ON" if self.is_enabled else "OFF"
+        return f"{self.site.domain} Automation ({status})"

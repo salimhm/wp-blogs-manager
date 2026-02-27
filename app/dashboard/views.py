@@ -1255,11 +1255,6 @@ def start_daily_run(request, site_id):
 
     site = get_object_or_404(Site, id=site_id)
     
-    # Check for active run
-    active_run = site.daily_runs.filter(status='running').first()
-    if active_run:
-        return redirect('dashboard:daily_run_status', site_id=site_id, run_id=active_run.run_number)
-    
     # Get all keyword lists with site-specific article counts
     from .models import KeywordList, Article
     from django.db.models import Count, Q
@@ -1282,56 +1277,30 @@ def start_daily_run(request, site_id):
         # Remaining = total keywords - articles already created for this site
         remaining = max(0, total_keywords - site_articles_count)
         
-        keyword_lists.append({
-            'id': kl.id,
-            'name': kl.name,
-            'total_keywords': total_keywords,
-            'site_articles': site_articles_count,
-            'remaining': remaining,
-            'created_at': kl.created_at
-        })
-        
+    # Fetch or Create Automation Settings
+    from .models import SiteAutomation
+    automation, _ = SiteAutomation.objects.get_or_create(site=site)
+    
     if request.method == 'POST':
-        target_count = request.POST.get('target_count')
+        target_count = request.POST.get('target_count', 10)
         keyword_list_id = request.POST.get('keyword_list')
-        
-        # Default to "Now" and "20 hours later" if not provided
-        start_time_str = request.POST.get('start_time')
-        end_time_str = request.POST.get('end_time')
-        
-        if not start_time_str:
-            # Current UTC time
-            start_time_str = timezone.now().strftime('%H:%M')
-            
-        if not end_time_str:
-            # Default window: 20 hours to be safe for high volume
-            # Logic in tasks.py handles wrapping to next day if end < start
-            end_dt = timezone.now() + datetime.timedelta(hours=20)
-            end_time_str = end_dt.strftime('%H:%M')
+        start_time_str = request.POST.get('start_time', '05:00')
+        end_time_str = request.POST.get('end_time', '01:00')
+        is_enabled = request.POST.get('is_enabled') == 'on'
         
         try:
-            target_count = int(target_count)
-            keyword_list_obj = KeywordList.objects.get(id=keyword_list_id) if keyword_list_id else None
+            automation.target_count = int(target_count)
+            automation.keyword_list_id = keyword_list_id if keyword_list_id else None
+            automation.start_time = start_time_str
+            automation.end_time = end_time_str
+            automation.is_enabled = is_enabled
+            automation.save()
             
-            run = DailyRun.objects.create(
-                site=site,
-                keyword_list=keyword_list_obj,
-                target_count=target_count,
-                start_time=start_time_str,
-                end_time=end_time_str,
-                status='running'
-            )
-            
-            # Trigger Celery task to schedule initial batch
-            process_daily_run.delay(run.id)
-            
-            messages.success(request, f'Daily run started! Target: {target_count} articles.')
-            return redirect('dashboard:daily_run_status', site_id=site_id, run_id=run.run_number)
+            messages.success(request, 'Automation settings updated successfully!')
+            return redirect('dashboard:site_detail', site_id=site.id)
             
         except ValueError:
             messages.error(request, 'Invalid target count')
-        except KeywordList.DoesNotExist:
-            messages.error(request, 'Invalid keyword list selected')
         except Exception as e:
             messages.error(request, f'Error: {str(e)}')
             
@@ -1341,6 +1310,7 @@ def start_daily_run(request, site_id):
             
     return render(request, 'dashboard/daily_runs/start.html', {
         'site': site,
+        'automation': automation,
         'keyword_lists': keyword_lists,
         'active_keys_count': active_keys_count,
         'estimated_capacity': estimated_capacity

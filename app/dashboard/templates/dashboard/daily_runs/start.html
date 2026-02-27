@@ -18,12 +18,22 @@
                     {% csrf_token %}
                     
                     <div class="form-section">
+                        <div class="form-group mb-4">
+                            <div class="form-check form-switch" style="font-size: 1.1rem;">
+                                <input class="form-check-input" type="checkbox" id="is_enabled" name="is_enabled" {% if automation.is_enabled %}checked{% endif %}>
+                                <label class="form-check-label fw-bold" for="is_enabled">Enable Daily Auto-Pilot</label>
+                            </div>
+                            <span class="form-hint">When enabled, the system will automatically generate articles every single day.</span>
+                        </div>
+
                         <div class="form-group">
                             <label for="keyword_list" class="form-label">Keyword List</label>
                             <select class="form-input" id="keyword_list" name="keyword_list" required>
                                 <option value="">-- Select a keyword list --</option>
                                 {% for kl in keyword_lists %}
-                                <option value="{{ kl.id }}">{{ kl.name }} ({{ kl.remaining }}/{{ kl.total_keywords }} remaining for this site)</option>
+                                <option value="{{ kl.id }}" {% if automation.keyword_list and automation.keyword_list.id == kl.id %}selected{% endif %}>
+                                    {{ kl.name }} ({{ kl.remaining }}/{{ kl.total_keywords }} remaining for this site)
+                                </option>
                                 {% empty %}
                                 <option value="" disabled>No keyword lists available</option>
                                 {% endfor %}
@@ -33,8 +43,19 @@
                         
                         <div class="form-group">
                             <label for="target_count" class="form-label">Target Article Count</label>
-                            <input type="number" class="form-input" id="target_count" name="target_count" value="10" min="1" required>
-                            <span class="form-hint">How many articles do you want to generate?</span>
+                            <input type="number" class="form-input" id="target_count" name="target_count" value="{{ automation.target_count }}" min="1" required>
+                            <span class="form-hint">How many articles do you want to generate per day?</span>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-6 form-group">
+                                <label for="start_time" class="form-label">Start Time (UTC)</label>
+                                <input type="time" class="form-input" id="start_time" name="start_time" value="{{ automation.start_time|time:'H:i' }}" required>
+                            </div>
+                            <div class="col-md-6 form-group">
+                                <label for="end_time" class="form-label">End Time (UTC)</label>
+                                <input type="time" class="form-input" id="end_time" name="end_time" value="{{ automation.end_time|time:'H:i' }}" required>
+                            </div>
                         </div>
                     </div>
                     
@@ -62,17 +83,17 @@
                         <div style="flex: 1">
                             <strong><i class="bi bi-clock-history"></i> Automatic Scheduling</strong>
                             <p class="mb-0 mt-1 small" style="opacity: 0.9">
-                                The run will start <strong>immediately</strong>. The system will automatically pace the generation over the next 20 hours to prevent API rate limits. 
-                                <br>You can stop the run at any time.
+                                The system checks automations every 10 minutes. 
+                                When the <strong>Start Time</strong> arrives and the auto-pilot is <strong>enabled</strong>, it will automatically pace your Target Count seamlessly until the End Time.
                             </p>
                         </div>
                     </div>
 
                     <div class="form-actions">
                         <button type="submit" class="btn btn-primary btn-lg" style="width: 100%">
-                            <span class="btn-icon">🚀</span>
-                            <span class="btn-text">Start Daily Generation Now</span>
-                            <span class="btn-desc">Starts immediately & runs in background</span>
+                            <span class="btn-icon">💾</span>
+                            <span class="btn-text">Save Automation Settings</span>
+                            <span class="btn-desc">Applies configuration for background auto-pilot</span>
                         </button>
                     </div>
                 </form>
