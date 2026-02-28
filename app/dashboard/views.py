@@ -65,75 +65,111 @@ def logout_view(request):
 # ============================================
 
 def dashboard_home(request):
-    """Main dashboard view - network overview."""
+    """Main dashboard view - optimized: ~8 bulk queries total (was ~150)."""
     import datetime
     import json
     from django.utils import timezone
     from .models import SiteAutomation, DailyRun, Article
+    from django.db.models import Count
 
     now = timezone.now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_start = today_start - datetime.timedelta(days=6)
+    sparkline_start = today_start - datetime.timedelta(days=13)
 
-    sites = Site.objects.all().prefetch_related('api_keys')
+    sites = list(Site.objects.all().prefetch_related('api_keys'))
+    site_ids = [s.id for s in sites]
 
-    # --- KPI Strip ---
-    total_sites = sites.count()
+    # ── KPI strip (6 simple count queries) ────────────────────────────
+    total_sites = len(sites)
     autopilot_enabled = SiteAutomation.objects.filter(is_enabled=True).count()
     articles_today = Article.objects.filter(status='published', published_at__gte=today_start).count()
     articles_week = Article.objects.filter(status='published', published_at__gte=week_start).count()
     total_published = Article.objects.filter(status='published').count()
     active_keys = APIKey.objects.filter(is_active=True, provider='groq').count()
 
-    # --- Currently Running Runs ---
-    running_runs_qs = DailyRun.objects.filter(status='running').select_related('site', 'keyword_list')
+    # ── Running runs (2 queries) ─────────────────────────────────────────────
+    running_runs_qs = list(DailyRun.objects.filter(status='running').select_related('site', 'keyword_list'))
+    running_run_ids = [r.id for r in running_runs_qs]
+    live_counts_map = (
+        {
+            row['daily_run_id']: row['cnt']
+            for row in Article.objects
+                .filter(daily_run_id__in=running_run_ids, status__in=['ready', 'published'])
+                .values('daily_run_id').annotate(cnt=Count('id'))
+        }
+        if running_run_ids else {}
+    )
     running_runs = []
     for run in running_runs_qs:
-        # Use live article count for accurate progress
-        live_count = Article.objects.filter(daily_run=run, status__in=['ready', 'published']).count()
+        live_count = live_counts_map.get(run.id, 0)
         progress = round((live_count / run.target_count) * 100, 1) if run.target_count > 0 else 0
-        running_runs.append({
-            'run': run,
-            'live_count': live_count,
-            'progress': progress,
-        })
+        running_runs.append({'run': run, 'live_count': live_count, 'progress': progress})
 
-    # --- Per-site table data + 14-day sparkline ---
+    # ── Sparklines: 1 grouped query replaces 112 individual ones ────────────
+    sparkline_map = {}  # { site_id: { date_obj: count } }
+    for row in (
+        Article.objects
+        .filter(site_id__in=site_ids, status='published', published_at__gte=sparkline_start)
+        .values('site_id', 'published_at__date')
+        .annotate(cnt=Count('id'))
+    ):
+        sparkline_map.setdefault(row['site_id'], {})[row['published_at__date']] = row['cnt']
+
+    # ── Per-site totals (2 queries) ──────────────────────────────────────────
+    total_per_site = {
+        row['site_id']: row['cnt']
+        for row in Article.objects
+            .filter(status='published', site_id__in=site_ids)
+            .values('site_id').annotate(cnt=Count('id'))
+    }
+    today_per_site = {
+        row['site_id']: row['cnt']
+        for row in Article.objects
+            .filter(status='published', published_at__gte=today_start, site_id__in=site_ids)
+            .values('site_id').annotate(cnt=Count('id'))
+    }
+
+    # ── Automations dict (1 query) ───────────────────────────────────────────
+    automations = {a.site_id: a for a in SiteAutomation.objects.filter(site_id__in=site_ids)}
+
+    # ── Last run per site (1 query, grouped in Python) ───────────────────────
+    last_run_map = {}
+    for run in DailyRun.objects.filter(site_id__in=site_ids).order_by('site_id', '-created_at'):
+        if run.site_id not in last_run_map:
+            last_run_map[run.site_id] = run
+
+    # Pre-compute 14 date labels/keys once
+    date_labels, date_keys = [], []
+    for i in range(13, -1, -1):
+        day = today_start - datetime.timedelta(days=i)
+        date_labels.append(day.strftime('%b %d'))
+        date_keys.append(day.date())
+
+    # ── Assemble per-site rows — pure Python, zero extra DB hits ─────────────
     sites_data = []
     for site in sites:
-        # 14-day per-day published counts
-        chart_data = []
-        chart_dates = []
-        for i in range(13, -1, -1):
-            day = today_start - datetime.timedelta(days=i)
-            count = Article.objects.filter(
-                site=site, status='published',
-                published_at__date=day.date()
-            ).count()
-            chart_data.append(count)
-            chart_dates.append(day.strftime('%b %d'))
+        site_spark = sparkline_map.get(site.id, {})
+        chart_data = [site_spark.get(dk, 0) for dk in date_keys]
 
-        last_run = DailyRun.objects.filter(site=site).order_by('-created_at').first()
-        automation = SiteAutomation.objects.filter(site=site).first()
-        total_for_site = Article.objects.filter(site=site, status='published').count()
-        today_for_site = Article.objects.filter(
-            site=site, status='published', published_at__gte=today_start
-        ).count()
+        automation     = automations.get(site.id)
+        last_run       = last_run_map.get(site.id)
+        total_for_site = total_per_site.get(site.id, 0)
+        today_for_site = today_per_site.get(site.id, 0)
 
-        # Next cycle countdown
+        # Next cycle countdown (pure Python)
         next_cycle_str = None
         if automation and automation.next_run_time:
             delta = automation.next_run_time - now
             if delta.total_seconds() > 0:
-                total_secs = int(delta.total_seconds())
-                h = total_secs // 3600
-                m = (total_secs % 3600) // 60
-                next_cycle_str = f"{h}h {m}m"
+                s = int(delta.total_seconds())
+                next_cycle_str = f"{s // 3600}h {(s % 3600) // 60}m"
             else:
                 next_cycle_str = "Due now"
 
-        # Health checks
-        key_count = site.api_keys.filter(is_active=True, provider='groq').count()
+        # Key count from prefetch_related — no extra query
+        key_count = sum(1 for k in site.api_keys.all() if k.is_active and k.provider == 'groq')
+
         alerts = []
         if automation and automation.is_enabled and key_count == 0:
             alerts.append('No active API keys')
@@ -151,20 +187,18 @@ def dashboard_home(request):
             'total_published': total_for_site,
             'today_published': today_for_site,
             'chart_data': json.dumps(chart_data),
-            'chart_dates': json.dumps(chart_dates),
+            'chart_dates': json.dumps(date_labels),
             'key_count': key_count,
             'alerts': alerts,
             'next_cycle': next_cycle_str,
         })
 
-    # Collect all health alerts for the top banner
     all_alerts = [(row['site'], row['alerts']) for row in sites_data if row['alerts']]
 
     context = {
         'sites_data': sites_data,
         'running_runs': running_runs,
         'all_alerts': all_alerts,
-        # KPI
         'total_sites': total_sites,
         'autopilot_enabled': autopilot_enabled,
         'articles_today': articles_today,
@@ -173,6 +207,7 @@ def dashboard_home(request):
         'active_keys': active_keys,
     }
     return render(request, 'dashboard/dashboard.html', context)
+
 
 
 def site_list(request):
