@@ -7,8 +7,8 @@
     <div class="card-header">
         <h2 class="card-title">Daily Run History</h2>
         <div class="card-actions">
-            <a href="{% url 'dashboard:start_daily_run' site.id %}" class="btn btn-primary btn-sm">+ New Run</a>
-            <a href="{% url 'dashboard:site_detail' site.id %}" class="btn btn-ghost btn-sm">← Back</a>
+            <a href="{% url 'dashboard:start_daily_run' site.domain %}" class="btn btn-primary btn-sm">+ New Run</a>
+            <a href="{% url 'dashboard:site_detail' site.domain %}" class="btn btn-ghost btn-sm">← Back</a>
         </div>
     </div>
     <div class="card-body p-0">
@@ -49,7 +49,7 @@
                         </span>
                     </td>
                     <td>
-                        <a href="{% url 'dashboard:daily_run_status' site.id run.run_number %}" class="btn btn-ghost btn-sm">View</a>
+                        <a href="{% url 'dashboard:daily_run_status' site.domain run.run_number %}" class="btn btn-ghost btn-sm">View</a>
                     </td>
                 </tr>
                 {% endfor %}
@@ -60,7 +60,7 @@
             <div class="empty-icon">📅</div>
             <h3>No Runs Yet</h3>
             <p>Start your first daily automation run to see history here.</p>
-            <a href="{% url 'dashboard:start_daily_run' site.id %}" class="btn btn-primary">Start First Run</a>
+            <a href="{% url 'dashboard:start_daily_run' site.domain %}" class="btn btn-primary">Start First Run</a>
         </div>
         {% endif %}
     </div>

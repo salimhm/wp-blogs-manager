@@ -7,7 +7,7 @@
     <div class="card-header">
         <h2 class="card-title">Articles ({{ total_count }})</h2>
         <div class="card-actions">
-            <a href="{% url 'dashboard:write_articles' site.id %}" class="btn btn-primary">+ Generate Articles</a>
+            <a href="{% url 'dashboard:write_articles' site.domain %}" class="btn btn-primary">+ Generate Articles</a>
             <button id="bulkGeneratePageBtn" class="btn btn-warning" onclick="startPageGeneration()">
                 🤖 Generate This Page
             </button>
@@ -15,7 +15,7 @@
                 🤖 Generate All Pending
             </button>
             {% if ready_count > 0 %}
-            <form method="post" action="{% url 'dashboard:mass_publish_articles' site.id %}" style="display:inline;">
+            <form method="post" action="{% url 'dashboard:mass_publish_articles' site.domain %}" style="display:inline;">
                 {% csrf_token %}
                 <button type="submit" class="btn btn-success" onclick="return confirm('Publish {{ ready_count }} articles?')">
                     Publish All ({{ ready_count }})
@@ -65,7 +65,7 @@
                 {% for article in articles %}
                 <tr id="article-row-{{ article.id }}" data-article-id="{{ article.id }}" data-status="{{ article.status }}">
                     <td id="article-title-{{ article.id }}">
-                        <a href="{% url 'dashboard:article_detail' site.id article.id %}">
+                        <a href="{% url 'dashboard:article_detail' site.domain article.id %}">
                             {{ article.title|default:"Untitled - Pending Generation" }}
                         </a>
                     </td>
@@ -94,7 +94,7 @@
                     <td>{{ article.updated_at|date:"M d, Y H:i" }}</td>
                     <td>
                         <div style="display: flex; gap: 6px;">
-                            <a href="{% url 'dashboard:article_detail' site.id article.id %}" class="btn btn-sm btn-secondary">View</a>
+                            <a href="{% url 'dashboard:article_detail' site.domain article.id %}" class="btn btn-sm btn-secondary">View</a>
                             {% if article.status == 'pending' or article.status == 'failed' %}
                             <button class="btn btn-sm btn-warning" id="gen-btn-{{ article.id }}" onclick="generateSingle({{ article.id }})">
                                 🤖
@@ -124,13 +124,13 @@
             {% endif %}
         </div>
         {% else %}
-        <p class="text-muted">No articles yet. <a href="{% url 'dashboard:write_articles' site.id %}">Generate some!</a></p>
+        <p class="text-muted">No articles yet. <a href="{% url 'dashboard:write_articles' site.domain %}">Generate some!</a></p>
         {% endif %}
     </div>
 </div>
 
 <div class="form-actions">
-    <a href="{% url 'dashboard:site_detail' site.id %}" class="btn btn-ghost">← Back to Site</a>
+    <a href="{% url 'dashboard:site_detail' site.domain %}" class="btn btn-ghost">← Back to Site</a>
 </div>
 {% endblock %}
 

@@ -14,20 +14,20 @@
                         {{ run.get_status_display }}
                     </span>
                     {% if run.status == 'running' %}
-                    <form method="post" action="{% url 'dashboard:pause_daily_run' site.id run.run_number %}" style="margin:0; display:inline;">
+                    <form method="post" action="{% url 'dashboard:pause_daily_run' site.domain run.run_number %}" style="margin:0; display:inline;">
                         {% csrf_token %}
                         <button type="submit" class="btn btn-sm btn-warning" title="Pause - can resume later">⏸ Pause</button>
                     </form>
-                    <form method="post" action="{% url 'dashboard:cancel_daily_run' site.id run.run_number %}" onsubmit="return confirm('Cancel and terminate all active tasks?');" style="margin:0; display:inline;">
+                    <form method="post" action="{% url 'dashboard:cancel_daily_run' site.domain run.run_number %}" onsubmit="return confirm('Cancel and terminate all active tasks?');" style="margin:0; display:inline;">
                         {% csrf_token %}
                         <button type="submit" class="btn btn-sm btn-danger" title="Cancel and force-kill active tasks">✕ Cancel</button>
                     </form>
                     {% elif run.status == 'paused' %}
-                    <form method="post" action="{% url 'dashboard:resume_daily_run' site.id run.run_number %}" style="margin:0; display:inline;">
+                    <form method="post" action="{% url 'dashboard:resume_daily_run' site.domain run.run_number %}" style="margin:0; display:inline;">
                         {% csrf_token %}
                         <button type="submit" class="btn btn-sm btn-success" title="Resume processing">▶ Resume</button>
                     </form>
-                    <form method="post" action="{% url 'dashboard:cancel_daily_run' site.id run.run_number %}" onsubmit="return confirm('Cancel this run permanently?');" style="margin:0; display:inline;">
+                    <form method="post" action="{% url 'dashboard:cancel_daily_run' site.domain run.run_number %}" onsubmit="return confirm('Cancel this run permanently?');" style="margin:0; display:inline;">
                         {% csrf_token %}
                         <button type="submit" class="btn btn-sm btn-danger" title="Cancel permanently">✕ Cancel</button>
                     </form>
@@ -72,7 +72,7 @@
         <div class="card">
             <div class="card-header">
                 <h2 class="card-title">Recent Activity</h2>
-                <a href="{% url 'dashboard:site_logs' site.id %}" class="btn btn-sm btn-ghost">View All</a>
+                <a href="{% url 'dashboard:site_logs' site.domain %}" class="btn btn-sm btn-ghost">View All</a>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
@@ -115,7 +115,7 @@
                             {% for article in articles %}
                             <tr>
                                 <td>
-                                    <a href="{% url 'dashboard:article_detail' site.id article.id %}" class="text-primary">
+                                    <a href="{% url 'dashboard:article_detail' site.domain article.id %}" class="text-primary">
                                         {{ article.title|truncatechars:50 }}
                                     </a>
                                 </td>
@@ -167,7 +167,7 @@
         </div>
         
         <div class="text-center mt-3">
-            <a href="{% url 'dashboard:site_detail' site.id %}" class="btn btn-ghost">← Back to Dashboard</a>
+            <a href="{% url 'dashboard:site_detail' site.domain %}" class="btn btn-ghost">← Back to Dashboard</a>
         </div>
     </div>
 </div>

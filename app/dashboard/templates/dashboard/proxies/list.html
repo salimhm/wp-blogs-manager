@@ -35,7 +35,7 @@
                         {% for proxy in proxies %}
                         <tr>
                             <td>
-                                <a href="{% url 'dashboard:site_detail' proxy.site.id %}" class="text-primary font-medium">
+                                <a href="{% url 'dashboard:site_detail' proxy.site.domain %}" class="text-primary font-medium">
                                     {{ proxy.site.domain }}
                                 </a>
                             </td>
@@ -55,7 +55,7 @@
                             </td>
                             <td>
                                 <div class="btn-group">
-                                    <a href="{% url 'dashboard:manage_proxies' proxy.site.id %}" class="btn btn-sm btn-outline">
+                                    <a href="{% url 'dashboard:manage_proxies' proxy.site.domain %}" class="btn btn-sm btn-outline">
                                         Manage
                                     </a>
                                 </div>

@@ -81,7 +81,7 @@
                         <button type="button" class="btn btn-sm btn-secondary" data-site-id="{{ site.id }}" data-proxy-id="{{ proxy.id }}" onclick="testExistingProxy(this.dataset.siteId, this.dataset.proxyId)">
                             Test
                         </button>
-                        <form method="post" action="{% url 'dashboard:delete_proxy' site.id proxy.id %}" style="display:inline;">
+                        <form method="post" action="{% url 'dashboard:delete_proxy' site.domain proxy.id %}" style="display:inline;">
                             {% csrf_token %}
                             <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete this proxy?')">Delete</button>
                         </form>
@@ -97,7 +97,7 @@
 </div>
 
 <div class="form-actions">
-    <a href="{% url 'dashboard:site_detail' site.id %}" class="btn btn-ghost">← Back to Site</a>
+    <a href="{% url 'dashboard:site_detail' site.domain %}" class="btn btn-ghost">← Back to Site</a>
 </div>
 {% endblock %}
 

@@ -4,13 +4,13 @@
 
 {% block header_actions %}
 <div class="header-actions">
-    <a href="{% url 'dashboard:site_logs' site.id %}" class="btn btn-secondary">📋 View Logs</a>
-    <a href="{% url 'dashboard:edit_site' site.id %}" class="btn btn-secondary">✏️ Edit</a>
-    <form method="post" action="{% url 'dashboard:verify_site' site.id %}" style="display:inline;">
+    <a href="{% url 'dashboard:site_logs' site.domain %}" class="btn btn-secondary">📋 View Logs</a>
+    <a href="{% url 'dashboard:edit_site' site.domain %}" class="btn btn-secondary">✏️ Edit</a>
+    <form method="post" action="{% url 'dashboard:verify_site' site.domain %}" style="display:inline;">
         {% csrf_token %}
         <button type="submit" class="btn btn-secondary">Verify Credentials</button>
     </form>
-    <form method="post" action="{% url 'dashboard:delete_site' site.id %}" style="display:inline;" onsubmit="return confirm('Delete this site?')">
+    <form method="post" action="{% url 'dashboard:delete_site' site.domain %}" style="display:inline;" onsubmit="return confirm('Delete this site?')">
         {% csrf_token %}
         <button type="submit" class="btn btn-danger">Delete</button>
     </form>
@@ -111,23 +111,23 @@
                     <span class="action-icon">🔐</span>
                     <span>WP Admin</span>
                 </a>
-                <a href="{% url 'dashboard:article_list' site.id %}" class="action-link">
+                <a href="{% url 'dashboard:article_list' site.domain %}" class="action-link">
                     <span class="action-icon">📝</span>
                     <span>Articles</span>
                 </a>
-                <a href="{% url 'dashboard:manage_api_keys' site.id %}" class="action-link">
+                <a href="{% url 'dashboard:manage_api_keys' site.domain %}" class="action-link">
                     <span class="action-icon">🔑</span>
                     <span>API Keys ({{ api_keys.count }})</span>
                 </a>
-                <a href="{% url 'dashboard:manage_proxies' site.id %}" class="action-link">
+                <a href="{% url 'dashboard:manage_proxies' site.domain %}" class="action-link">
                     <span class="action-icon">🌐</span>
                     <span>Proxies ({{ proxies.count }})</span>
                 </a>
-                <a href="{% url 'dashboard:start_daily_run' site.id %}" class="action-link highlight">
+                <a href="{% url 'dashboard:start_daily_run' site.domain %}" class="action-link highlight">
                     <span class="action-icon">🚀</span>
                     <span>Daily Automation</span>
                 </a>
-                <a href="{% url 'dashboard:daily_run_history' site.id %}" class="action-link">
+                <a href="{% url 'dashboard:daily_run_history' site.domain %}" class="action-link">
                     <span class="action-icon">📜</span>
                     <span>Run History</span>
                 </a>
@@ -140,7 +140,7 @@
 <div class="card">
     <div class="card-header">
         <h2 class="card-title">API Keys</h2>
-        <a href="{% url 'dashboard:manage_api_keys' site.id %}" class="btn btn-sm btn-secondary">Manage</a>
+        <a href="{% url 'dashboard:manage_api_keys' site.domain %}" class="btn btn-sm btn-secondary">Manage</a>
     </div>
     <div class="card-body">
         {% if api_keys %}

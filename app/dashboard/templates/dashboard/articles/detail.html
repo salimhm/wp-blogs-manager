@@ -38,7 +38,7 @@
         </button>
         {% if article.content_html %}
         <hr style="margin: 24px 0; border-color: rgba(255,255,255,0.1);">
-        <form method="post" action="{% url 'dashboard:publish_article' site.id article.id %}">
+        <form method="post" action="{% url 'dashboard:publish_article' site.domain article.id %}">
             {% csrf_token %}
             <button type="submit" class="btn btn-success">📤 Publish Existing Content to WordPress</button>
         </form>
@@ -67,7 +67,7 @@
         
         {% if article.status == 'ready' %}
         <hr style="margin: 24px 0; border-color: rgba(255,255,255,0.1);">
-        <form method="post" action="{% url 'dashboard:publish_article' site.id article.id %}">
+        <form method="post" action="{% url 'dashboard:publish_article' site.domain article.id %}">
             {% csrf_token %}
             <button type="submit" class="btn btn-success">📤 Publish to WordPress</button>
         </form>
@@ -84,7 +84,7 @@
             {% endif %}
         </div>
         <hr style="margin: 24px 0; border-color: rgba(255,255,255,0.1);">
-        <form method="post" action="{% url 'dashboard:publish_article' site.id article.id %}">
+        <form method="post" action="{% url 'dashboard:publish_article' site.domain article.id %}">
             {% csrf_token %}
             <button type="submit" class="btn btn-warning">🔄 Republish to WordPress</button>
             <small class="text-muted" style="margin-left: 10px;">Updates the existing post with current content</small>
@@ -142,7 +142,7 @@
 </div>
 
 <div class="form-actions">
-    <a href="{% url 'dashboard:article_list' site.id %}" class="btn btn-ghost">← Back to Articles</a>
+    <a href="{% url 'dashboard:article_list' site.domain %}" class="btn btn-ghost">← Back to Articles</a>
 </div>
 {% endblock %}
 

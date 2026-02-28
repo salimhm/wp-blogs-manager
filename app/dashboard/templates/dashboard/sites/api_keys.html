@@ -93,7 +93,7 @@
                     <td>{{ key.model_name|default:"-" }}</td>
                     <td><span class="badge {% if key.is_active %}badge-success{% else %}badge-secondary{% endif %}">{% if key.is_active %}Active{% else %}Inactive{% endif %}</span></td>
                     <td>
-                        <form method="post" action="{% url 'dashboard:delete_api_key' site.id key.id %}" style="display:inline;">
+                        <form method="post" action="{% url 'dashboard:delete_api_key' site.domain key.id %}" style="display:inline;">
                             {% csrf_token %}
                             <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete this key?')">Delete</button>
                         </form>
@@ -109,6 +109,6 @@
 </div>
 
 <div class="form-actions">
-    <a href="{% url 'dashboard:site_detail' site.id %}" class="btn btn-ghost">← Back to Site</a>
+    <a href="{% url 'dashboard:site_detail' site.domain %}" class="btn btn-ghost">← Back to Site</a>
 </div>
 {% endblock %}

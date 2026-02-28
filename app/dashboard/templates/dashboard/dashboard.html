@@ -9,8 +9,11 @@
 {% endblock %}
 
 {% block content %}
-<!-- Stats Cards -->
-<div class="stats-grid">
+
+<!-- ============================================================ -->
+<!-- KPI Strip -->
+<!-- ============================================================ -->
+<div class="stats-grid mb-4" style="grid-template-columns: repeat(6, 1fr);">
     <div class="stat-card">
         <div class="stat-icon">🌐</div>
         <div class="stat-info">
@@ -19,49 +22,182 @@
         </div>
     </div>
     <div class="stat-card">
-        <div class="stat-icon">✓</div>
+        <div class="stat-icon">🤖</div>
         <div class="stat-info">
-            <span class="stat-value">{{ verified_sites }}</span>
-            <span class="stat-label">Verified</span>
+            <span class="stat-value">{{ autopilot_enabled }}</span>
+            <span class="stat-label">Auto-Pilot On</span>
         </div>
     </div>
     <div class="stat-card">
-        <div class="stat-icon">○</div>
+        <div class="stat-icon">📝</div>
         <div class="stat-info">
-            <span class="stat-value">{{ total_sites|add:"-"|add:verified_sites|default:0 }}</span>
-            <span class="stat-label">Pending</span>
+            <span class="stat-value">{{ articles_today }}</span>
+            <span class="stat-label">Published Today</span>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">📅</div>
+        <div class="stat-info">
+            <span class="stat-value">{{ articles_week }}</span>
+            <span class="stat-label">This Week</span>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">✅</div>
+        <div class="stat-info">
+            <span class="stat-value">{{ total_published }}</span>
+            <span class="stat-label">Total Published</span>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon">🔑</div>
+        <div class="stat-info">
+            <span class="stat-value">{{ active_keys }}</span>
+            <span class="stat-label">Active API Keys</span>
         </div>
     </div>
 </div>
 
-<!-- Sites List -->
+<!-- ============================================================ -->
+<!-- Health Alerts -->
+<!-- ============================================================ -->
+{% if all_alerts %}
+<div class="card mb-4" style="border: 1px solid rgba(255, 100, 100, 0.35); background: rgba(255,60,60,0.07);">
+    <div class="card-header" style="border-bottom: 1px solid rgba(255,100,100,0.2);">
+        <h2 class="card-title" style="color: #ff6b6b;">⚠️ Health Alerts</h2>
+    </div>
+    <div class="card-body" style="padding: 12px 20px;">
+        {% for site, site_alerts in all_alerts %}
+        <div style="display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
+            <strong style="min-width: 200px;">
+                <a href="{% url 'dashboard:site_detail' site.domain %}" style="color: #e0e0e0;">{{ site.domain }}</a>
+            </strong>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                {% for alert in site_alerts %}
+                <span class="badge" style="background: rgba(255,100,100,0.25); color: #ff9999; border: 1px solid rgba(255,100,100,0.3);">{{ alert }}</span>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- ============================================================ -->
+<!-- Currently Running Runs -->
+<!-- ============================================================ -->
+{% if running_runs %}
+<div class="card mb-4">
+    <div class="card-header">
+        <h2 class="card-title">
+            <span style="display: inline-block; width: 10px; height: 10px; background: #4ade80; border-radius: 50%; margin-right: 8px; animation: pulse 2s infinite;"></span>
+            Currently Running
+        </h2>
+        <span class="badge badge-success">{{ running_runs|length }} Active</span>
+    </div>
+    <div class="card-body" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">
+        {% for item in running_runs %}
+        <div style="background: rgba(255,255,255,0.04); border-radius: 12px; padding: 16px; border: 1px solid rgba(74, 222, 128, 0.15);">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                <span style="font-weight: 600;">{{ item.run.site.domain }}</span>
+                <a href="{% url 'dashboard:daily_run_status' item.run.site.domain item.run.run_number %}" class="btn btn-sm btn-ghost">View →</a>
+            </div>
+            <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">
+                {{ item.live_count }} / {{ item.run.target_count }} articles &middot; Started {{ item.run.started_at|date:"H:i" }} UTC
+            </div>
+            <div style="background: rgba(255,255,255,0.1); border-radius: 100px; height: 8px; overflow: hidden;">
+                <div style="width: {{ item.progress }}%; height: 100%; background: var(--accent-gradient); border-radius: 100px; transition: width 0.5s ease;"></div>
+            </div>
+            <div style="text-align: right; font-size: 11px; color: var(--text-muted); margin-top: 4px;">{{ item.progress }}%</div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- ============================================================ -->
+<!-- All Sites Table -->
+<!-- ============================================================ -->
 <div class="card">
     <div class="card-header">
-        <h2 class="card-title">Your Sites</h2>
+        <h2 class="card-title">All Sites</h2>
+        <span class="text-muted small">14-day output per site</span>
     </div>
-    <div class="card-body">
-        {% if sites %}
-        <div class="sites-grid">
-            {% for site in sites %}
-            <div class="site-card">
-                <div class="site-header">
-                    <span class="site-status {% if site.is_verified %}verified{% else %}pending{% endif %}">
-                        {% if site.is_verified %}✓{% else %}○{% endif %}
-                    </span>
-                    <h3 class="site-domain">{{ site.domain }}</h3>
-                </div>
-                <div class="site-meta">
-                    <span class="badge {% if site.is_fresh_installation %}badge-info{% else %}badge-secondary{% endif %}">
-                        {% if site.is_fresh_installation %}Fresh{% else %}Existing{% endif %}
-                    </span>
-                    <span class="site-date">{{ site.created_at|date:"M d, Y" }}</span>
-                </div>
-                <div class="site-actions">
-                    <a href="{% url 'dashboard:site_detail' site.id %}" class="btn btn-sm btn-secondary">View</a>
-                    <a href="{% url 'dashboard:manage_api_keys' site.id %}" class="btn btn-sm btn-ghost">API Keys</a>
-                </div>
-            </div>
-            {% endfor %}
+    <div class="card-body p-0">
+        {% if sites_data %}
+        <div class="table-responsive">
+            <table class="table mb-0" style="table-layout: fixed;">
+                <colgroup>
+                    <col style="width: 200px;">
+                    <col style="width: 110px;">
+                    <col style="width: 100px;">
+                    <col style="width: 110px;">
+                    <col style="width: 130px;">
+                    <col style="width: 110px;">
+                    <col style="width: 180px;">
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>Domain</th>
+                        <th>Auto-Pilot</th>
+                        <th>Today</th>
+                        <th>Total</th>
+                        <th>Last Run</th>
+                        <th>Next Cycle</th>
+                        <th style="text-align: center;">14-Day Output</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in sites_data %}
+                    <tr style="{% if row.alerts %}background: rgba(255,100,100,0.04);{% endif %}">
+                        <td>
+                            <a href="{% url 'dashboard:site_detail' row.site.domain %}" class="text-primary" style="font-weight: 500;">
+                                {{ row.site.domain }}
+                            </a>
+                            {% if row.alerts %}
+                            <span title="{{ row.alerts|join:', ' }}" style="cursor: help; margin-left: 4px;">⚠️</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if row.automation and row.automation.is_enabled %}
+                            <span class="badge badge-success">✓ On</span>
+                            {% else %}
+                            <span class="badge badge-secondary">Off</span>
+                            {% endif %}
+                        </td>
+                        <td style="font-weight: 600; color: {% if row.today_published > 0 %}#4ade80{% else %}var(--text-muted){% endif %};">
+                            {{ row.today_published }}
+                        </td>
+                        <td>{{ row.total_published }}</td>
+                        <td class="text-muted small">
+                            {% if row.last_run %}
+                            <span class="badge {% if row.last_run.status == 'running' %}badge-success{% elif row.last_run.status == 'completed' %}badge-info{% elif row.last_run.status == 'failed' %}badge-error{% elif row.last_run.status == 'paused' %}badge-warning{% else %}badge-secondary{% endif %}">
+                                {{ row.last_run.status }}
+                            </span>
+                            <br><span style="font-size: 11px;">{{ row.last_run.created_at|date:"M d, H:i" }}</span>
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-muted small">
+                            {% if row.next_cycle %}
+                            <span style="color: #a78bfa;">{{ row.next_cycle }}</span>
+                            {% else %}
+                            <span>—</span>
+                            {% endif %}
+                        </td>
+                        <td style="padding: 8px 12px;">
+                            <canvas class="sparkline-chart"
+                                data-values="{{ row.chart_data }}"
+                                data-labels="{{ row.chart_dates }}"
+                                style="width: 100%; height: 40px; display: block;"
+                                height="40">
+                            </canvas>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
         {% else %}
         <div class="empty-state">
@@ -73,4 +209,63 @@
         {% endif %}
     </div>
 </div>
+
+<!-- Chart.js + sparkline renderer -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const canvases = document.querySelectorAll('.sparkline-chart');
+
+    canvases.forEach(function(canvas) {
+        const values = JSON.parse(canvas.dataset.values || '[]');
+        const labels = JSON.parse(canvas.dataset.labels || '[]');
+        const max = Math.max(...values, 1);
+
+        new Chart(canvas, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    data: values,
+                    backgroundColor: values.map(v =>
+                        v > 0 ? 'rgba(139, 92, 246, 0.7)' : 'rgba(255,255,255,0.06)'
+                    ),
+                    borderRadius: 3,
+                    borderSkipped: false,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            title: (items) => items[0].label,
+                            label: (item) => `${item.raw} articles published`
+                        },
+                        backgroundColor: 'rgba(15,15,25,0.95)',
+                        padding: 8,
+                        titleFont: { size: 11 },
+                        bodyFont: { size: 11 },
+                    }
+                },
+                scales: {
+                    x: { display: false },
+                    y: { display: false, min: 0, max: max }
+                }
+            }
+        });
+    });
+});
+</script>
+
+<style>
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+</style>
+
 {% endblock %}

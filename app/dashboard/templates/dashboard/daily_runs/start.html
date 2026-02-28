@@ -8,7 +8,7 @@
         <div class="card">
             <div class="card-header">
                 <h2 class="card-title">Configure Automation</h2>
-                <a href="{% url 'dashboard:site_detail' site.id %}" class="btn btn-sm btn-ghost">
+                <a href="{% url 'dashboard:site_detail' site.domain %}" class="btn btn-sm btn-ghost">
                     ← Back to Site
                 </a>
             </div>
@@ -57,7 +57,7 @@
                         <div style="flex: 1">
                             <strong><i class="bi bi-exclamation-triangle"></i> No API Keys Detected</strong>
                             <p class="mb-0 mt-1 small" style="opacity: 0.9">
-                                This site currently has 0 active Groq API keys. You must <a href="{% url 'dashboard:manage_api_keys' site.id %}" style="text-decoration: underline; font-weight: bold; color: inherit;">add API keys</a> before starting a daily run.
+                                This site currently has 0 active Groq API keys. You must <a href="{% url 'dashboard:manage_api_keys' site.domain %}" style="text-decoration: underline; font-weight: bold; color: inherit;">add API keys</a> before starting a daily run.
                             </p>
                         </div>
                     </div>

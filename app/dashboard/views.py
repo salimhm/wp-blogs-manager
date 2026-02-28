@@ -65,12 +65,112 @@ def logout_view(request):
 # ============================================
 
 def dashboard_home(request):
-    """Main dashboard view."""
-    sites = Site.objects.all()
+    """Main dashboard view - network overview."""
+    import datetime
+    import json
+    from django.utils import timezone
+    from .models import SiteAutomation, DailyRun, Article
+
+    now = timezone.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today_start - datetime.timedelta(days=6)
+
+    sites = Site.objects.all().prefetch_related('api_keys')
+
+    # --- KPI Strip ---
+    total_sites = sites.count()
+    autopilot_enabled = SiteAutomation.objects.filter(is_enabled=True).count()
+    articles_today = Article.objects.filter(status='published', published_at__gte=today_start).count()
+    articles_week = Article.objects.filter(status='published', published_at__gte=week_start).count()
+    total_published = Article.objects.filter(status='published').count()
+    active_keys = APIKey.objects.filter(is_active=True, provider='groq').count()
+
+    # --- Currently Running Runs ---
+    running_runs_qs = DailyRun.objects.filter(status='running').select_related('site', 'keyword_list')
+    running_runs = []
+    for run in running_runs_qs:
+        # Use live article count for accurate progress
+        live_count = Article.objects.filter(daily_run=run, status__in=['ready', 'published']).count()
+        progress = round((live_count / run.target_count) * 100, 1) if run.target_count > 0 else 0
+        running_runs.append({
+            'run': run,
+            'live_count': live_count,
+            'progress': progress,
+        })
+
+    # --- Per-site table data + 14-day sparkline ---
+    sites_data = []
+    for site in sites:
+        # 14-day per-day published counts
+        chart_data = []
+        chart_dates = []
+        for i in range(13, -1, -1):
+            day = today_start - datetime.timedelta(days=i)
+            count = Article.objects.filter(
+                site=site, status='published',
+                published_at__date=day.date()
+            ).count()
+            chart_data.append(count)
+            chart_dates.append(day.strftime('%b %d'))
+
+        last_run = DailyRun.objects.filter(site=site).order_by('-created_at').first()
+        automation = SiteAutomation.objects.filter(site=site).first()
+        total_for_site = Article.objects.filter(site=site, status='published').count()
+        today_for_site = Article.objects.filter(
+            site=site, status='published', published_at__gte=today_start
+        ).count()
+
+        # Next cycle countdown
+        next_cycle_str = None
+        if automation and automation.next_run_time:
+            delta = automation.next_run_time - now
+            if delta.total_seconds() > 0:
+                total_secs = int(delta.total_seconds())
+                h = total_secs // 3600
+                m = (total_secs % 3600) // 60
+                next_cycle_str = f"{h}h {m}m"
+            else:
+                next_cycle_str = "Due now"
+
+        # Health checks
+        key_count = site.api_keys.filter(is_active=True, provider='groq').count()
+        alerts = []
+        if automation and automation.is_enabled and key_count == 0:
+            alerts.append('No active API keys')
+        if last_run and last_run.status == 'failed':
+            alerts.append('Last run failed')
+        if automation and automation.is_enabled and last_run:
+            hours_since = (now - last_run.created_at).total_seconds() / 3600
+            if hours_since > 48 and today_for_site == 0:
+                alerts.append('No output in 48h')
+
+        sites_data.append({
+            'site': site,
+            'automation': automation,
+            'last_run': last_run,
+            'total_published': total_for_site,
+            'today_published': today_for_site,
+            'chart_data': json.dumps(chart_data),
+            'chart_dates': json.dumps(chart_dates),
+            'key_count': key_count,
+            'alerts': alerts,
+            'next_cycle': next_cycle_str,
+        })
+
+    # Collect all health alerts for the top banner
+    all_alerts = [(row['site'], row['alerts']) for row in sites_data if row['alerts']]
+
     context = {
-        'sites': sites,
-        'total_sites': sites.count(),
-        'verified_sites': sites.filter(is_verified=True).count(),
+        'sites_data': sites_data,
+        'running_runs': running_runs,
+        'all_alerts': all_alerts,
+        # KPI
+        'total_sites': total_sites,
+        'autopilot_enabled': autopilot_enabled,
+        'articles_today': articles_today,
+        'articles_week': articles_week,
+        'total_published': total_published,
+        'active_keys': active_keys,
     }
     return render(request, 'dashboard/dashboard.html', context)
 
@@ -152,9 +252,9 @@ def add_site(request):
     return render(request, 'dashboard/sites/add.html', {'initial_domain': initial_domain})
 
 
-def site_detail(request, site_id):
+def site_detail(request, site_domain):
     """View site details and analytics."""
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     api_keys = site.api_keys.all()
     proxies = site.proxies.all()
     
@@ -178,10 +278,10 @@ def site_detail(request, site_id):
     return render(request, 'dashboard/sites/detail.html', context)
 
 
-def site_logs(request, site_id):
+def site_logs(request, site_domain):
     """View site error logs."""
     from .models import SiteLog
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     logs = site.logs.all().order_by('-created_at')
     
     level = request.GET.get('level')
@@ -195,9 +295,9 @@ def site_logs(request, site_id):
     })
 
 
-def edit_site(request, site_id):
+def edit_site(request, site_domain):
     """Edit site details."""
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     
     if request.method == 'POST':
         # Update fields
@@ -216,15 +316,15 @@ def edit_site(request, site_id):
         
         site.save()
         messages.success(request, f'Site {site.domain} updated successfully')
-        return redirect('dashboard:site_detail', site_id=site.id)
+        return redirect('dashboard:site_detail', site_domain=site.domain)
     
     return render(request, 'dashboard/sites/edit.html', {'site': site})
 
 
 @require_http_methods(["POST"])
-def delete_site(request, site_id):
+def delete_site(request, site_domain):
     """Delete a site."""
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     domain = site.domain
     site.delete()
     messages.success(request, f'Site {domain} deleted')
@@ -232,9 +332,9 @@ def delete_site(request, site_id):
 
 
 @require_http_methods(["POST"])
-def verify_site(request, site_id):
+def verify_site(request, site_domain):
     """Verify site credentials."""
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     
     # Get proxy if configured
     proxy = None
@@ -269,13 +369,13 @@ def verify_site(request, site_id):
         site.save()
         messages.error(request, message)
     
-    return redirect('dashboard:site_detail', site_id=site_id)
+    return redirect('dashboard:site_detail', site_domain=site_domain)
 
 
 @require_http_methods(["GET", "POST"])
-def manage_api_keys(request, site_id):
+def manage_api_keys(request, site_domain):
     """Manage API keys for a site."""
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     
     if request.method == 'POST':
         provider = request.POST.get('provider')
@@ -322,7 +422,7 @@ def manage_api_keys(request, site_id):
                     )
                     messages.success(request, f'{provider.title()} API key saved')
         
-        return redirect('dashboard:manage_api_keys', site_id=site_id)
+        return redirect('dashboard:manage_api_keys', site_domain=site_domain)
     
     api_keys = site.api_keys.all()
     return render(request, 'dashboard/sites/api_keys.html', {
@@ -333,12 +433,13 @@ def manage_api_keys(request, site_id):
 
 
 @require_http_methods(["POST"])
-def delete_api_key(request, site_id, key_id):
+def delete_api_key(request, site_domain, key_id):
     """Delete an API key."""
-    api_key = get_object_or_404(APIKey, id=key_id, site_id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
+    api_key = get_object_or_404(APIKey, id=key_id, site=site)
     api_key.delete()
     messages.success(request, 'API key deleted')
-    return redirect('dashboard:manage_api_keys', site_id=site_id)
+    return redirect('dashboard:manage_api_keys', site_domain=site_domain)
 
 
 def bulk_key_tester(request):
@@ -450,9 +551,9 @@ def proxy_list(request):
 
 
 @require_http_methods(["GET", "POST"])
-def manage_proxies(request, site_id):
+def manage_proxies(request, site_domain):
     """Manage proxy settings for a site."""
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     
     if request.method == 'POST':
         proxy_type = request.POST.get('proxy_type', 'http')
@@ -473,7 +574,7 @@ def manage_proxies(request, site_id):
             )
             messages.success(request, 'Proxy added')
         
-        return redirect('dashboard:manage_proxies', site_id=site_id)
+        return redirect('dashboard:manage_proxies', site_domain=site_domain)
     
     proxies = site.proxies.all()
     return render(request, 'dashboard/sites/proxies.html', {
@@ -483,12 +584,13 @@ def manage_proxies(request, site_id):
 
 
 @require_http_methods(["POST"])
-def delete_proxy(request, site_id, proxy_id):
+def delete_proxy(request, site_domain, proxy_id):
     """Delete a proxy."""
-    proxy = get_object_or_404(ProxySettings, id=proxy_id, site_id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
+    proxy = get_object_or_404(ProxySettings, id=proxy_id, site=site)
     proxy.delete()
     messages.success(request, 'Proxy deleted')
-    return redirect('dashboard:manage_proxies', site_id=site_id)
+    return redirect('dashboard:manage_proxies', site_domain=site_domain)
 
 
 def settings_view(request):
@@ -610,9 +712,10 @@ def api_create_dns(request):
 
 
 @require_http_methods(["POST"])
-def test_proxy(request, site_id, proxy_id):
+def test_proxy(request, site_domain, proxy_id):
     """AJAX endpoint to test proxy connectivity."""
-    proxy = get_object_or_404(ProxySettings, id=proxy_id, site_id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
+    proxy = get_object_or_404(ProxySettings, id=proxy_id, site=site)
     
     success, message, info = verify_proxy(
         proxy_type=proxy.proxy_type,
@@ -731,11 +834,11 @@ def delete_keyword_list(request, list_id):
 # Article Views
 # ============================================
 
-def article_list(request, site_id):
+def article_list(request, site_domain):
     """List all articles for a site with pagination."""
     from django.core.paginator import Paginator
     
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     articles_qs = site.articles.all()
     
     # Get page size from query param (default 20)
@@ -762,9 +865,9 @@ def article_list(request, site_id):
 
 
 @require_http_methods(["GET", "POST"])
-def write_articles(request, site_id):
+def write_articles(request, site_domain):
     """Start article generation from a keyword list."""
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     keyword_lists_qs = KeywordList.objects.all()
     print(f"[DEBUG] write_articles: Found {keyword_lists_qs.count()} keyword lists")
     
@@ -777,21 +880,21 @@ def write_articles(request, site_id):
         
         if not list_id:
             messages.error(request, 'Please select a keyword list')
-            return redirect('dashboard:write_articles', site_id=site_id)
+            return redirect('dashboard:write_articles', site_domain=site_domain)
         
         try:
             kw_list = get_object_or_404(KeywordList, id=list_id)
             
             # Offload to Celery to prevent timeout
             from .tasks import create_pending_articles_task
-            create_pending_articles_task.delay(site_id, int(list_id), selected_indices or None)
+            create_pending_articles_task.delay(site.id, int(list_id), selected_indices or None)
             
             messages.success(request, f'Creating pending articles from "{kw_list.name}" in background. Check logs for progress.')
-            return redirect('dashboard:article_list', site_id=site_id)
+            return redirect('dashboard:article_list', site_domain=site_domain)
             
         except Exception as e:
             messages.error(request, f'Error creating articles: {str(e)}')
-            return redirect('dashboard:write_articles', site_id=site_id)
+            return redirect('dashboard:write_articles', site_domain=site_domain)
     
     # Build preview data for template
     keyword_lists_data = []
@@ -831,9 +934,9 @@ def write_articles(request, site_id):
     })
 
 
-def article_detail(request, site_id, article_id):
+def article_detail(request, site_domain, article_id):
     """View/edit a single article."""
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     article = get_object_or_404(Article, id=article_id, site=site)
     
     if request.method == 'POST':
@@ -841,7 +944,7 @@ def article_detail(request, site_id, article_id):
         article.content_html = request.POST.get('content_html', article.content_html)
         article.save()
         messages.success(request, 'Article saved')
-        return redirect('dashboard:article_detail', site_id=site_id, article_id=article_id)
+        return redirect('dashboard:article_detail', site_domain=site_domain, article_id=article_id)
     
     # Extract H2s used for this article
     h2s = []
@@ -868,9 +971,9 @@ def article_detail(request, site_id, article_id):
 
 
 @require_http_methods(["POST"])
-def publish_article(request, site_id, article_id):
+def publish_article(request, site_domain, article_id):
     """Publish a single article to WordPress."""
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     article = get_object_or_404(Article, id=article_id, site=site)
     
     from .utils import publish_to_wordpress
@@ -888,13 +991,13 @@ def publish_article(request, site_id, article_id):
     else:
         messages.error(request, f'Failed: {message}')
     
-    return redirect('dashboard:article_detail', site_id=site_id, article_id=article_id)
+    return redirect('dashboard:article_detail', site_domain=site_domain, article_id=article_id)
 
 
 @require_http_methods(["POST"])
-def mass_publish_articles(request, site_id):
+def mass_publish_articles(request, site_domain):
     """Publish all ready articles to WordPress."""
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     ready_articles = site.articles.filter(status='ready')
     
     from .utils import publish_to_wordpress
@@ -918,7 +1021,7 @@ def mass_publish_articles(request, site_id):
             failed += 1
     
     messages.success(request, f'Published {published} articles. Failed: {failed}')
-    return redirect('dashboard:article_list', site_id=site_id)
+    return redirect('dashboard:article_list', site_domain=site_domain)
 
 
 @require_http_methods(["POST"])
@@ -1248,12 +1351,12 @@ from .models import DailyRun
 from .tasks import process_daily_run
 
 @require_http_methods(["GET", "POST"])
-def start_daily_run(request, site_id):
+def start_daily_run(request, site_domain):
     """Configuration page to start a daily article generation run."""
     from django.utils import timezone
     import datetime
 
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     
     # Get all keyword lists with site-specific article counts
     from .models import KeywordList, Article
@@ -1333,15 +1436,15 @@ def start_daily_run(request, site_id):
                     )
                     process_daily_run.delay(run.id)
                     messages.success(request, f'Automation Saved. Started 24-Hour Cycle ({target_count} articles)!')
-                    return redirect('dashboard:daily_run_status', site_id=site.id, run_id=run.run_number)
+                    return redirect('dashboard:daily_run_status', site_domain=site.domain, run_id=run.run_number)
                 else:
                     messages.error(request, 'You must add API Keys before generating articles.')
-                    return redirect('dashboard:site_detail', site_id=site.id)
+                    return redirect('dashboard:site_detail', site_domain=site.domain)
             
             # If standard save:
             automation.save()
             messages.success(request, 'Automation settings updated successfully!')
-            return redirect('dashboard:site_detail', site_id=site.id)
+            return redirect('dashboard:site_detail', site_domain=site.domain)
             
         except Exception as e:
             messages.error(request, f'Error: {str(e)}')
@@ -1355,9 +1458,9 @@ def start_daily_run(request, site_id):
     })
 
 
-def daily_run_status(request, site_id, run_id):
+def daily_run_status(request, site_domain, run_id):
     """Monitor progress of a daily run."""
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     run = get_object_or_404(DailyRun, run_number=run_id, site=site)
     
     # Get articles actually generated by this run
@@ -1406,9 +1509,9 @@ def daily_run_status(request, site_id, run_id):
 
 
 @require_http_methods(["POST"])
-def pause_daily_run(request, site_id, run_id):
+def pause_daily_run(request, site_domain, run_id):
     """Pause a daily run (can be resumed later)."""
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     run = get_object_or_404(DailyRun, run_number=run_id, site=site)
     
     if run.status == 'running':
@@ -1439,13 +1542,13 @@ def pause_daily_run(request, site_id, run_id):
         print(f"[PAUSE] Daily run {run.id} for site {site.domain} paused by user. Terminated {killed_count} active/queued workers.")
         messages.info(request, f'Daily run paused. {killed_count} active/queued task(s) forcibly stopped. New articles will not start. You can resume anytime.')
     
-    return redirect('dashboard:daily_run_status', site_id=site_id, run_id=run.run_number)
+    return redirect('dashboard:daily_run_status', site_domain=site_domain, run_id=run.run_number)
 
 
 @require_http_methods(["POST"])
-def resume_daily_run(request, site_id, run_id):
+def resume_daily_run(request, site_domain, run_id):
     """Resume a paused daily run."""
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     run = get_object_or_404(DailyRun, run_number=run_id, site=site)
     
     if run.status == 'paused':
@@ -1457,13 +1560,13 @@ def resume_daily_run(request, site_id, run_id):
         
         messages.success(request, 'Daily run resumed!')
     
-    return redirect('dashboard:daily_run_status', site_id=site_id, run_id=run.run_number)
+    return redirect('dashboard:daily_run_status', site_domain=site_domain, run_id=run.run_number)
 
 
 @require_http_methods(["POST"])
-def cancel_daily_run(request, site_id, run_id):
+def cancel_daily_run(request, site_domain, run_id):
     """Cancel a daily run and FORCE KILL active tasks."""
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     run = get_object_or_404(DailyRun, run_number=run_id, site=site)
     
     if run.status in ['running', 'paused']:
@@ -1491,16 +1594,16 @@ def cancel_daily_run(request, site_id, run_id):
                 
         messages.warning(request, f'Daily run cancelled. {killed_count} active tasks were terminated.')
     
-    return redirect('dashboard:daily_run_status', site_id=site_id, run_id=run.run_number)
+    return redirect('dashboard:daily_run_status', site_domain=site_domain, run_id=run.run_number)
 
 
 # Keep old name for backwards compatibility with existing URL
 stop_daily_run = pause_daily_run
 
 
-def daily_run_history(request, site_id):
+def daily_run_history(request, site_domain):
     """View history of all daily runs for a site."""
-    site = get_object_or_404(Site, id=site_id)
+    site = get_object_or_404(Site, domain=site_domain)
     runs = site.daily_runs.order_by('-started_at')
     
     return render(request, 'dashboard/daily_runs/history.html', {
