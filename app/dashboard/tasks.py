@@ -399,8 +399,12 @@ def create_pending_articles_task(site_id, keyword_list_id, selected_indices=None
 def auto_resume_stalled_runs():
     """
     Heartbeat task to recover Daily Runs that were paused/killed by a Redis disconnect crash.
-    Runs every 5 minutes. If a run hasn't finished, but hasn't generated an article in 5+ minutes,
-    it re-triggers the scheduler.
+    Runs every 5 minutes. If a run hasn't produced a completed (ready/published) article in
+    30+ minutes, it's considered stalled and gets re-triggered.
+
+    Key fix: after a Redis crash, articles can be stuck in 'generating' with a recent updated_at,
+    making the old 'any article activity' check think the run is healthy. We now explicitly check
+    for COMPLETED output (ready/published), not just any article update.
     """
     from .models import DailyRun, Article
     from django.utils import timezone
@@ -408,28 +412,44 @@ def auto_resume_stalled_runs():
 
     stalled_threshold = timezone.now() - datetime.timedelta(minutes=30)
     running_runs = DailyRun.objects.filter(status='running')
-    
+
     recovered_count = 0
     for run in running_runs:
-        # Determine if the run actually still needs articles
+        # If target already reached, close it out
         needed = run.target_count - run.completed_count
         if needed <= 0:
             run.status = 'completed'
             run.save(update_fields=['status'])
             continue
-            
-        # Check the last time an Article for this run was updated/created
-        latest_article = Article.objects.filter(daily_run=run).order_by('-updated_at').first()
-        
-        # If no articles were ever created, OR the last activity was > 30 mins ago, it's stalled.
-        if not latest_article or latest_article.updated_at < stalled_threshold:
-            print(f"[AUTO-RECOVERY] Run {run.id} for {run.site.domain} appears stalled for 30+ mins. Resuming...")
-            
-            # This mathematically re-evaluates the needed target and schedules replacement ETAs
+
+        # Check the last time an article for this run was COMPLETED (ready or published).
+        # We intentionally ignore 'generating' articles — they may be zombies from a crashed worker.
+        last_completed = (
+            Article.objects
+            .filter(daily_run=run, status__in=['ready', 'published'])
+            .order_by('-updated_at')
+            .first()
+        )
+
+        # Determine if stalled:
+        #   - Run started > 30 mins ago, AND
+        #   - No completed articles at all, OR last completed was > 30 mins ago
+        run_age_ok = run.started_at < stalled_threshold
+        last_ok = last_completed is None or last_completed.updated_at < stalled_threshold
+
+        if run_age_ok and last_ok:
+            print(f"[AUTO-RECOVERY] Run {run.id} for {run.site.domain} stalled (no output in 30+ mins). Resuming...")
+
+            # Reset any stuck 'generating' articles back to 'pending'
+            # so process_daily_run can pick them up and reschedule them.
+            stuck_count = Article.objects.filter(daily_run=run, status='generating').update(status='pending')
+            if stuck_count:
+                print(f"[AUTO-RECOVERY] Reset {stuck_count} stuck 'generating' articles to 'pending'.")
+
             from .tasks import process_daily_run
             process_daily_run.delay(run.id)
             recovered_count += 1
-            
+
     return f"Recovered {recovered_count} stalled runs"
 
 
