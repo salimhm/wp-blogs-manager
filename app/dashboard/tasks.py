@@ -434,6 +434,8 @@ def auto_resume_stalled_runs():
         # Determine if stalled:
         #   - No completed articles at all, AND the run started > 30 mins ago, OR
         #   - Last completed article was > 30 mins ago (output has stopped)
+        #   - Run started > 30 mins ago, AND
+        #   - No completed articles at all, OR last completed was > 30 mins ago
         run_age_ok = run.started_at < stalled_threshold
         last_ok = last_completed is None or last_completed.updated_at < stalled_threshold
 
