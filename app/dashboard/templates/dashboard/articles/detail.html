@@ -1,0 +1,196 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}{{ article.title|default:"Article" }} - {{ site.domain }}{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Article Details</h2>
+        <div class="card-actions">
+            <span class="badge 
+                {% if article.status == 'ready' %}badge-success
+                {% elif article.status == 'published' %}badge-info
+                {% elif article.status == 'generating' %}badge-warning
+                {% elif article.status == 'failed' %}badge-danger
+                {% else %}badge-secondary{% endif %}">
+                {{ article.get_status_display }}
+            </span>
+        </div>
+    </div>
+    <div class="card-body">
+        {% if article.status == 'pending' %}
+        <div class="alert alert-info">
+            <strong>Pending Generation</strong><br>
+            Click "Generate" to create this article using AI.
+        </div>
+        <button id="generateBtn" class="btn btn-primary" onclick="generateArticle()">
+            🤖 Generate Article
+        </button>
+        <div id="generateResult" class="proxy-result hidden" style="margin-top: 16px;"></div>
+        
+        {% elif article.status == 'failed' %}
+        <div class="alert alert-error">
+            <strong>Generation Failed</strong><br>
+            {{ article.error_message }}
+        </div>
+        <button id="generateBtn" class="btn btn-primary" onclick="generateArticle()">
+            🔄 Retry Generation
+        </button>
+        {% if article.content_html %}
+        <hr style="margin: 24px 0; border-color: rgba(255,255,255,0.1);">
+        <form method="post" action="{% url 'dashboard:publish_article' site.domain article.id %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-success">📤 Publish Existing Content to WordPress</button>
+        </form>
+        {% endif %}
+        <div id="generateResult" class="proxy-result hidden" style="margin-top: 16px;"></div>
+        
+        {% else %}
+        <form method="post">
+            {% csrf_token %}
+            <div class="form-group">
+                <label class="form-label">Title</label>
+                <input type="text" name="title" value="{{ article.title }}" class="form-input">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Content HTML</label>
+                <textarea name="content_html" class="form-input" rows="15">{{ article.content_html }}</textarea>
+            </div>
+            <div class="form-actions-inline" style="display: flex; gap: 12px; flex-wrap: wrap;">
+                <button type="submit" class="btn btn-secondary">💾 Save Changes</button>
+                <button type="button" id="generateBtn" class="btn btn-warning" onclick="generateArticle()">
+                    🔄 Regenerate
+                </button>
+            </div>
+        </form>
+        <div id="generateResult" class="proxy-result hidden" style="margin-top: 16px;"></div>
+        
+        {% if article.status == 'ready' %}
+        <hr style="margin: 24px 0; border-color: rgba(255,255,255,0.1);">
+        <form method="post" action="{% url 'dashboard:publish_article' site.domain article.id %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-success">📤 Publish to WordPress</button>
+        </form>
+        {% endif %}
+        
+        {% if article.status == 'published' %}
+        <div class="alert alert-success" style="margin-top: 16px;">
+            ✅ Published as post #{{ article.wp_post_id }} on {{ article.published_at|date:"M d, Y H:i" }}
+            {% if article.wp_post_url %}
+            <br><br>
+            <a href="{{ article.wp_post_url }}" target="_blank" class="btn btn-sm btn-secondary">
+                🔗 View on Website →
+            </a>
+            {% endif %}
+        </div>
+        <hr style="margin: 24px 0; border-color: rgba(255,255,255,0.1);">
+        <form method="post" action="{% url 'dashboard:publish_article' site.domain article.id %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-warning">🔄 Republish to WordPress</button>
+            <small class="text-muted" style="margin-left: 10px;">Updates the existing post with current content</small>
+        </form>
+        {% endif %}
+        {% endif %}
+    </div>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+    <div class="card-header">
+        <h2 class="card-title">Preview</h2>
+    </div>
+    <div class="card-body">
+        <div class="article-preview" style="background: #1a1a2e; padding: 20px; border-radius: 8px;">
+            {{ article.content_html|safe }}
+        </div>
+    </div>
+</div>
+
+<!-- Keywords Info -->
+<div class="card" style="margin-top: 16px;">
+    <div class="card-header">
+        <h2 class="card-title">Keywords & Source</h2>
+    </div>
+    <div class="card-body">
+        <div class="info-list">
+            <div class="info-item">
+                <span class="info-label">Keyword List</span>
+                <span class="info-value">{{ article.keyword_list.name|default:"N/A" }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Keyword Index</span>
+                <span class="info-value">#{{ article.keyword_index|default:"N/A" }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Created</span>
+                <span class="info-value">{{ article.created_at|date:"M d, Y H:i" }}</span>
+            </div>
+        </div>
+        
+        {% if h2s %}
+        <div style="margin-top: 20px;">
+            <h4 style="margin-bottom: 12px; font-size: 14px; color: var(--text-muted);">H2 Keywords Used:</h4>
+            <div class="form-section">
+                <ul style="margin: 0; padding-left: 20px;">
+                    {% for h2 in h2s %}
+                    <li style="margin-bottom: 8px;">{{ h2 }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="form-actions">
+    <a href="{% url 'dashboard:article_list' site.domain %}" class="btn btn-ghost">← Back to Articles</a>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+var csrfToken = '{{ csrf_token }}';
+var articleId = {{ article.id }};
+
+async function generateArticle() {
+    var btn = document.getElementById('generateBtn');
+    var resultDiv = document.getElementById('generateResult');
+    
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Generating...';
+    resultDiv.className = 'alert alert-info';
+    resultDiv.textContent = 'Generating article with AI (this may take 1-2 minutes)...';
+    resultDiv.classList.remove('hidden');
+    
+    try {
+        var response = await fetch('/api/generate-article/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken
+            },
+            body: JSON.stringify({
+                article_id: articleId
+            })
+        });
+        
+        var data = await response.json();
+        
+        if (data.success) {
+            resultDiv.className = 'alert alert-success';
+            resultDiv.textContent = '✓ ' + data.message + ' Reloading...';
+            setTimeout(function() { window.location.reload(); }, 1500);
+        } else {
+            resultDiv.className = 'alert alert-error';
+            resultDiv.textContent = '❌ ' + data.message;
+            btn.disabled = false;
+            btn.innerHTML = '🔄 Retry';
+        }
+    } catch (error) {
+        resultDiv.className = 'alert alert-error';
+        resultDiv.textContent = '❌ Error: ' + error.message;
+        btn.disabled = false;
+        btn.innerHTML = '🔄 Retry';
+    }
+}
+</script>
+{% endblock %}

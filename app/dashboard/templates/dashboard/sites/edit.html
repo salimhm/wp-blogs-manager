@@ -1,0 +1,73 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}Edit {{ site.domain }}{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Edit Site: {{ site.domain }}</h2>
+    </div>
+    <div class="card-body">
+        <form method="post">
+            {% csrf_token %}
+            
+            <div class="form-group">
+                <label class="form-label">Domain</label>
+                <input type="text" class="form-input" value="{{ site.domain }}" disabled>
+                <small class="form-help">Domain cannot be changed</small>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">WP Username</label>
+                <input type="text" name="wp_username" class="form-input" value="{{ site.wp_username }}" required>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">WP Admin Password</label>
+                <input type="password" name="wp_password" class="form-input" placeholder="Leave empty to keep current">
+                <small class="form-help">Your WordPress admin login password</small>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">App Password (for REST API)</label>
+                <input type="password" name="wp_app_password" class="form-input" placeholder="Leave empty to keep current">
+                <small class="form-help">
+                    Required for publishing articles via API. 
+                    <a href="https://{{ site.domain }}/wp-admin/profile.php#application-passwords-section" target="_blank">
+                        Create one in WP Admin → Profile → Application Passwords →
+                    </a>
+                </small>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">Admin Email</label>
+                <input type="email" name="wp_admin_email" class="form-input" value="{{ site.wp_admin_email }}">
+            </div>
+            
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">💾 Save Changes</button>
+                <a href="{% url 'dashboard:site_detail' site.domain %}" class="btn btn-ghost">Cancel</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+    <div class="card-header">
+        <h2 class="card-title">📖 How to Create an App Password</h2>
+    </div>
+    <div class="card-body">
+        <ol style="line-height: 2; padding-left: 20px;">
+            <li>Go to your <a href="https://{{ site.domain }}/wp-admin/profile.php" target="_blank">WordPress Profile page →</a></li>
+            <li>Scroll down to <strong>Application Passwords</strong> section</li>
+            <li>Enter a name (e.g., "Blog Publisher")</li>
+            <li>Click <strong>Add New Application Password</strong></li>
+            <li>Copy the generated password (spaces are normal, keep them)</li>
+            <li>Paste it in the App Password field above</li>
+        </ol>
+        <div class="alert alert-info" style="margin-top: 16px;">
+            <strong>Note:</strong> App Passwords require WordPress 5.6+ and HTTPS enabled on your site.
+        </div>
+    </div>
+</div>
+{% endblock %}

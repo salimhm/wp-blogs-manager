@@ -1,0 +1,322 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}Articles - {{ site.domain }}{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2 class="card-title">Articles ({{ total_count }})</h2>
+        <div class="card-actions">
+            <a href="{% url 'dashboard:write_articles' site.domain %}" class="btn btn-primary">+ Generate Articles</a>
+            <button id="bulkGeneratePageBtn" class="btn btn-warning" onclick="startPageGeneration()">
+                🤖 Generate This Page
+            </button>
+            <button id="bulkGenerateAllBtn" class="btn btn-secondary" onclick="startBulkGeneration()">
+                🤖 Generate All Pending
+            </button>
+            {% if ready_count > 0 %}
+            <form method="post" action="{% url 'dashboard:mass_publish_articles' site.domain %}" style="display:inline;">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-success" onclick="return confirm('Publish {{ ready_count }} articles?')">
+                    Publish All ({{ ready_count }})
+                </button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+    <div class="card-body">
+        <!-- Bulk Generation Progress -->
+        <div id="bulkProgress" class="alert alert-info" style="display: none; margin-bottom: 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span id="bulkProgressText">Starting...</span>
+                <button class="btn btn-sm btn-danger" onclick="cancelBulkGeneration()">Cancel</button>
+            </div>
+            <div style="background: rgba(0,0,0,0.2); border-radius: 4px; height: 8px; margin-top: 12px;">
+                <div id="bulkProgressBar" style="background: #667eea; height: 100%; border-radius: 4px; width: 0%; transition: width 0.3s;"></div>
+            </div>
+        </div>
+
+        <!-- Pagination Controls Top -->
+        <div class="pagination-controls" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
+            <div class="page-size-selector">
+                <span style="margin-right: 8px;">Show:</span>
+                <a href="?per_page=10" class="btn btn-sm {% if per_page == 10 %}btn-primary{% else %}btn-ghost{% endif %}">10</a>
+                <a href="?per_page=20" class="btn btn-sm {% if per_page == 20 %}btn-primary{% else %}btn-ghost{% endif %}">20</a>
+                <a href="?per_page=50" class="btn btn-sm {% if per_page == 50 %}btn-primary{% else %}btn-ghost{% endif %}">50</a>
+                <a href="?per_page=100" class="btn btn-sm {% if per_page == 100 %}btn-primary{% else %}btn-ghost{% endif %}">100</a>
+            </div>
+            <div class="page-info" style="color: rgba(255,255,255,0.6);">
+                Page {{ articles.number }} of {{ articles.paginator.num_pages }}
+            </div>
+        </div>
+
+        {% if articles %}
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Title</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Updated</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for article in articles %}
+                <tr id="article-row-{{ article.id }}" data-article-id="{{ article.id }}" data-status="{{ article.status }}">
+                    <td id="article-title-{{ article.id }}">
+                        <a href="{% url 'dashboard:article_detail' site.domain article.id %}">
+                            {{ article.title|default:"Untitled - Pending Generation" }}
+                        </a>
+                    </td>
+                    <td id="article-status-{{ article.id }}">
+                        {% if article.status == 'failed' and article.error_message %}
+                        <details style="cursor: pointer;">
+                            <summary>
+                                <span class="badge badge-danger">Failed</span>
+                            </summary>
+                            <div style="margin-top: 8px; padding: 8px; background: rgba(220,53,69,0.1); border-radius: 4px; font-size: 12px; max-width: 300px; word-break: break-word;">
+                                {{ article.error_message|truncatewords:30 }}
+                            </div>
+                        </details>
+                        {% else %}
+                        <span class="badge 
+                            {% if article.status == 'ready' %}badge-success
+                            {% elif article.status == 'published' %}badge-info
+                            {% elif article.status == 'generating' %}badge-warning
+                            {% elif article.status == 'failed' %}badge-danger
+                            {% else %}badge-secondary{% endif %}">
+                            {{ article.get_status_display }}
+                        </span>
+                        {% endif %}
+                    </td>
+                    <td>{{ article.created_at|date:"M d, Y H:i" }}</td>
+                    <td>{{ article.updated_at|date:"M d, Y H:i" }}</td>
+                    <td>
+                        <div style="display: flex; gap: 6px;">
+                            <a href="{% url 'dashboard:article_detail' site.domain article.id %}" class="btn btn-sm btn-secondary">View</a>
+                            {% if article.status == 'pending' or article.status == 'failed' %}
+                            <button class="btn btn-sm btn-warning" id="gen-btn-{{ article.id }}" onclick="generateSingle({{ article.id }})">
+                                🤖
+                            </button>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <!-- Pagination Navigation -->
+        <div class="pagination" style="display: flex; justify-content: center; align-items: center; gap: 8px; margin-top: 24px;">
+            {% if articles.has_previous %}
+            <a href="?page=1&per_page={{ per_page }}" class="btn btn-sm btn-ghost">« First</a>
+            <a href="?page={{ articles.previous_page_number }}&per_page={{ per_page }}" class="btn btn-sm btn-ghost">‹ Prev</a>
+            {% endif %}
+            
+            <span style="padding: 8px 16px; background: rgba(255,255,255,0.1); border-radius: 6px;">
+                {{ articles.number }} / {{ articles.paginator.num_pages }}
+            </span>
+            
+            {% if articles.has_next %}
+            <a href="?page={{ articles.next_page_number }}&per_page={{ per_page }}" class="btn btn-sm btn-ghost">Next ›</a>
+            <a href="?page={{ articles.paginator.num_pages }}&per_page={{ per_page }}" class="btn btn-sm btn-ghost">Last »</a>
+            {% endif %}
+        </div>
+        {% else %}
+        <p class="text-muted">No articles yet. <a href="{% url 'dashboard:write_articles' site.domain %}">Generate some!</a></p>
+        {% endif %}
+    </div>
+</div>
+
+<div class="form-actions">
+    <a href="{% url 'dashboard:site_detail' site.domain %}" class="btn btn-ghost">← Back to Site</a>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+var siteId = {{ site.id }};
+var csrfToken = '{{ csrf_token }}';
+var eventSource = null;
+
+function generateSingle(articleId) {
+    var btn = document.getElementById('gen-btn-' + articleId);
+    btn.disabled = true;
+    btn.innerHTML = '⏳';
+    
+    updateArticleStatus(articleId, 'generating', 'Generating...');
+    
+    fetch('/api/generate-article/', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken
+        },
+        body: JSON.stringify({ article_id: articleId })
+    })
+    .then(function(response) { return response.json(); })
+    .then(function(data) {
+        if (data.success) {
+            updateArticleStatus(articleId, 'ready', 'Ready');
+            updateArticleTitle(articleId, data.article.title);
+            btn.style.display = 'none';
+        } else {
+            updateArticleStatusWithError(articleId, data.message);
+            btn.disabled = false;
+            btn.innerHTML = '🤖';
+        }
+    })
+    .catch(function(error) {
+        updateArticleStatusWithError(articleId, error.message);
+        btn.disabled = false;
+        btn.innerHTML = '🤖';
+    });
+}
+
+function getPagePendingIds() {
+    var ids = [];
+    document.querySelectorAll('tr[data-article-id]').forEach(function(row) {
+        var status = row.getAttribute('data-status');
+        if (status === 'pending' || status === 'failed') {
+            ids.push(row.getAttribute('data-article-id'));
+        }
+    });
+    return ids;
+}
+
+function startPageGeneration() {
+    var ids = getPagePendingIds();
+    if (ids.length === 0) {
+        alert('No pending or failed articles on this page to generate.');
+        return;
+    }
+    startGeneration(ids.join(','), 'bulkGeneratePageBtn');
+}
+
+function startBulkGeneration() {
+    startGeneration('', 'bulkGenerateAllBtn');
+}
+
+function startGeneration(articleIds, btnId) {
+    var btn = document.getElementById(btnId);
+    var progress = document.getElementById('bulkProgress');
+    var progressText = document.getElementById('bulkProgressText');
+    var progressBar = document.getElementById('bulkProgressBar');
+    
+    document.getElementById('bulkGeneratePageBtn').disabled = true;
+    document.getElementById('bulkGenerateAllBtn').disabled = true;
+    btn.innerHTML = '⏳ Running...';
+    progress.style.display = 'block';
+    progressText.textContent = 'Connecting...';
+    progressBar.style.width = '0%';
+    
+    var url = '/api/bulk-generate/?site_id=' + siteId;
+    if (articleIds) {
+        url += '&article_ids=' + articleIds;
+    }
+    
+    eventSource = new EventSource(url);
+    
+    eventSource.onmessage = function(event) {
+        var data = JSON.parse(event.data);
+        
+        if (data.type === 'start') {
+            progressText.textContent = 'Starting generation of ' + data.total + ' articles...';
+        }
+        else if (data.type === 'generating') {
+            progressText.textContent = '⏳ Generating article ' + data.index + '/' + data.total + '...';
+            progressBar.style.width = ((data.index - 0.5) / data.total * 100) + '%';
+            updateArticleStatus(data.article_id, 'generating', 'Generating...');
+        }
+        else if (data.type === 'completed') {
+            progressText.textContent = '✓ Completed ' + data.completed + '/' + data.total;
+            progressBar.style.width = (data.index / data.total * 100) + '%';
+            updateArticleStatus(data.article_id, 'ready', 'Ready');
+            updateArticleTitle(data.article_id, data.title);
+            hideGenerateButton(data.article_id);
+        }
+        else if (data.type === 'rate_limited') {
+            progressText.textContent = '⚠️ Rate limited. Waiting ' + data.wait_seconds + 's (retry ' + data.retry + '/3)...';
+        }
+        else if (data.type === 'error') {
+            updateArticleStatusWithError(data.article_id, data.message);
+        }
+        else if (data.type === 'done') {
+            progressText.textContent = '✅ Done! Generated: ' + data.completed + ', Failed: ' + data.failed;
+            progressBar.style.width = '100%';
+            resetButtons();
+            eventSource.close();
+            
+            setTimeout(function() { location.reload(); }, 2000);
+        }
+    };
+    
+    eventSource.onerror = function() {
+        progressText.textContent = '❌ Connection error. Please try again.';
+        resetButtons();
+        eventSource.close();
+    };
+}
+
+function cancelBulkGeneration() {
+    if (eventSource) {
+        eventSource.close();
+    }
+    document.getElementById('bulkProgress').style.display = 'none';
+    resetButtons();
+    location.reload();
+}
+
+function resetButtons() {
+    document.getElementById('bulkGeneratePageBtn').disabled = false;
+    document.getElementById('bulkGeneratePageBtn').innerHTML = '🤖 Generate This Page';
+    document.getElementById('bulkGenerateAllBtn').disabled = false;
+    document.getElementById('bulkGenerateAllBtn').innerHTML = '🤖 Generate All Pending';
+}
+
+function hideGenerateButton(articleId) {
+    var btn = document.getElementById('gen-btn-' + articleId);
+    if (btn) {
+        btn.style.display = 'none';
+    }
+}
+
+function updateArticleStatus(articleId, status, label) {
+    var statusCell = document.getElementById('article-status-' + articleId);
+    if (statusCell) {
+        var badgeClass = 'badge-secondary';
+        if (status === 'ready') badgeClass = 'badge-success';
+        else if (status === 'generating') badgeClass = 'badge-warning';
+        else if (status === 'failed') badgeClass = 'badge-danger';
+        
+        statusCell.innerHTML = '<span class="badge ' + badgeClass + '">' + label + '</span>';
+    }
+    var row = document.getElementById('article-row-' + articleId);
+    if (row) {
+        row.setAttribute('data-status', status);
+    }
+}
+
+function updateArticleStatusWithError(articleId, errorMessage) {
+    var statusCell = document.getElementById('article-status-' + articleId);
+    if (statusCell) {
+        statusCell.innerHTML = '<details style="cursor: pointer;"><summary><span class="badge badge-danger">Failed</span></summary><div style="margin-top: 8px; padding: 8px; background: rgba(220,53,69,0.1); border-radius: 4px; font-size: 12px; max-width: 300px; word-break: break-word;">' + errorMessage + '</div></details>';
+    }
+    var row = document.getElementById('article-row-' + articleId);
+    if (row) {
+        row.setAttribute('data-status', 'failed');
+    }
+}
+
+function updateArticleTitle(articleId, title) {
+    var titleCell = document.getElementById('article-title-' + articleId);
+    if (titleCell && title) {
+        var link = titleCell.querySelector('a');
+        if (link) {
+            link.textContent = title;
+        }
+    }
+}
+</script>
+{% endblock %}

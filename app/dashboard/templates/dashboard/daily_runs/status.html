@@ -1,0 +1,180 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}Run Status: {{ site.domain }}{% endblock %}
+
+{% block content %}
+<div class="row">
+    <!-- Progress Card -->
+    <div class="col-md-8">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h2 class="card-title">Live Progress</h2>
+                <div class="d-flex align-items-center gap-3">
+                    <span class="badge {% if run.status == 'running' %}badge-success{% elif run.status == 'paused' %}badge-warning{% elif run.status == 'cancelled' %}badge-secondary{% else %}badge-info{% endif %}">
+                        {{ run.get_status_display }}
+                    </span>
+                    {% if run.status == 'running' %}
+                    <form method="post" action="{% url 'dashboard:pause_daily_run' site.domain run.run_number %}" style="margin:0; display:inline;">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-sm btn-warning" title="Pause - can resume later">⏸ Pause</button>
+                    </form>
+                    <form method="post" action="{% url 'dashboard:cancel_daily_run' site.domain run.run_number %}" onsubmit="return confirm('Cancel and terminate all active tasks?');" style="margin:0; display:inline;">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-sm btn-danger" title="Cancel and force-kill active tasks">✕ Cancel</button>
+                    </form>
+                    {% elif run.status == 'paused' %}
+                    <form method="post" action="{% url 'dashboard:resume_daily_run' site.domain run.run_number %}" style="margin:0; display:inline;">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-sm btn-success" title="Resume processing">▶ Resume</button>
+                    </form>
+                    <form method="post" action="{% url 'dashboard:cancel_daily_run' site.domain run.run_number %}" onsubmit="return confirm('Cancel this run permanently?');" style="margin:0; display:inline;">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-sm btn-danger" title="Cancel permanently">✕ Cancel</button>
+                    </form>
+                    {% endif %}
+                </div>
+            </div>
+            <div class="card-body text-center py-5">
+                <!-- Circular Progress or Large Text -->
+                <div class="mb-4">
+                    <span style="font-size: 64px; font-weight: 700; background: var(--accent-gradient); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;">
+                        {{ completed_count }}
+                    </span>
+                    <span class="text-muted h3">/ {{ run.target_count }}</span>
+                </div>
+                
+                <!-- Custom Progress Bar -->
+                <div style="background: rgba(255,255,255,0.1); border-radius: 100px; height: 12px; overflow: hidden; margin: 0 auto 30px; max-width: 80%;">
+                    <div style="width: {{ progress }}%; height: 100%; background: var(--accent-gradient); border-radius: 100px; transition: width 0.5s ease;"></div>
+                </div>
+                
+                <div class="stats-grid" style="margin-bottom: 0;">
+                    <div class="stat-card justify-content-center flex-column text-center">
+                        <span class="stat-value text-danger">{{ failed_count }}</span>
+                        <span class="stat-label">Failed</span>
+                    </div>
+                    <div class="stat-card justify-content-center flex-column text-center">
+                        <span class="stat-value">{{ run.target_count|add:"-"|add:completed_count|add:"-"|add:failed_count }}</span>
+                        <span class="stat-label">Pending</span>
+                    </div>
+                    <div class="stat-card justify-content-center flex-column text-center">
+                        <span class="stat-value" style="font-size: 18px">{{ run.started_at|date:"H:i" }}</span>
+                        <span class="stat-label">Started UTC</span>
+                    </div>
+                </div>
+            </div>
+            <div class="card-footer bg-transparent border-top border-light text-center">
+                <small class="text-muted"><i class="bi bi-arrow-repeat spin"></i> Auto-refreshing every 30s</small>
+            </div>
+        </div>
+        
+        <!-- Recent Logs -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Recent Activity</h2>
+                <a href="{% url 'dashboard:site_logs' site.domain %}" class="btn btn-sm btn-ghost">View All</a>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table mb-0">
+                        <tbody>
+                            {% for log in run_logs %}
+                            <tr>
+                                <td style="width: 100px" class="text-muted small">{{ log.created_at|date:"H:i:s" }}</td>
+                                <td>
+                                    <span class="badge {% if log.level == 'error' %}badge-error{% else %}badge-secondary{% endif %} me-2">{{ log.level }}</span>
+                                    <span style="font-size: 14px">{{ log.message|truncatechars:60 }}</span>
+                                </td>
+                            </tr>
+                            {% empty %}
+                            <tr><td colspan="2" class="text-center py-4 text-muted">No logs yet</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Articles Generated -->
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Articles Generated ({{ completed_count }})</h2>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table mb-0">
+                        <thead>
+                            <tr>
+                                <th>Title</th>
+                                <th>Status</th>
+                                <th>Created</th>
+                                <th>Updated</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for article in articles %}
+                            <tr>
+                                <td>
+                                    <a href="{% url 'dashboard:article_detail' site.domain article.id %}" class="text-primary">
+                                        {{ article.title|truncatechars:50 }}
+                                    </a>
+                                </td>
+                                <td>
+                                    <span class="badge {% if article.status == 'published' %}badge-success{% elif article.status == 'ready' %}badge-info{% elif article.status == 'failed' %}badge-error{% else %}badge-secondary{% endif %}">
+                                        {{ article.status }}
+                                    </span>
+                                </td>
+                                <td class="text-muted small">{{ article.created_at|date:"M d H:i" }}</td>
+                                <td class="text-muted small">{{ article.updated_at|date:"M d H:i" }}</td>
+                            </tr>
+                            {% empty %}
+                            <tr><td colspan="4" class="text-center py-4 text-muted">No articles yet</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Info Sidebar -->
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Run Details</h2>
+            </div>
+            <div class="card-body">
+                <div class="info-list">
+                    <div class="info-item">
+                        <span class="info-label">Target</span>
+                        <span class="info-value">{{ run.target_count }} Articles</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Window</span>
+                        <span class="info-value">{{ run.start_time|time:"H:i" }} - {{ run.end_time|time:"H:i" }}</span>
+                    </div>
+                    <div class="info-item">
+                        <span class="info-label">Est. Completion</span>
+                        <!-- Simple logic: if running, show end time or calc -->
+                        <span class="info-value text-muted">~{{ run.end_time|time:"H:i" }}</span>
+                    </div>
+                </div>
+                
+                <div class="alert alert-info mt-4 mb-0">
+                     <i class="bi bi-info-circle-fill"></i> You can safely leave this page. The worker is processing in the background.
+                </div>
+            </div>
+        </div>
+        
+        <div class="text-center mt-3">
+            <a href="{% url 'dashboard:site_detail' site.domain %}" class="btn btn-ghost">← Back to Dashboard</a>
+        </div>
+    </div>
+</div>
+
+<script>
+    setTimeout(function() {
+        window.location.reload();
+    }, 30000);
+</script>
+{% endblock %}
