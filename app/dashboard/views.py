@@ -65,30 +65,18 @@ def logout_view(request):
 # ============================================
 
 def dashboard_home(request):
-    """Main dashboard view - optimized: ~8 bulk queries total (was ~150)."""
+    """Main dashboard view - optimized: ~8 bulk queries total (was ~150), with 60s Redis cache."""
     import datetime
     import json
     from django.utils import timezone
+    from django.core.cache import cache
     from .models import SiteAutomation, DailyRun, Article
     from django.db.models import Count
 
     now = timezone.now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    week_start = today_start - datetime.timedelta(days=6)
-    sparkline_start = today_start - datetime.timedelta(days=13)
 
-    sites = list(Site.objects.all().prefetch_related('api_keys'))
-    site_ids = [s.id for s in sites]
-
-    # ── KPI strip (6 simple count queries) ────────────────────────────
-    total_sites = len(sites)
-    autopilot_enabled = SiteAutomation.objects.filter(is_enabled=True).count()
-    articles_today = Article.objects.filter(status='published', published_at__gte=today_start).count()
-    articles_week = Article.objects.filter(status='published', published_at__gte=week_start).count()
-    total_published = Article.objects.filter(status='published').count()
-    active_keys = APIKey.objects.filter(is_active=True, provider='groq').count()
-
-    # ── Running runs (2 queries) ─────────────────────────────────────────────
+    # ── Running runs: always live (2 fast queries, must be real-time) ───────────
     running_runs_qs = list(DailyRun.objects.filter(status='running').select_related('site', 'keyword_list'))
     running_run_ids = [r.id for r in running_runs_qs]
     live_counts_map = (
@@ -106,7 +94,33 @@ def dashboard_home(request):
         progress = round((live_count / run.target_count) * 100, 1) if run.target_count > 0 else 0
         running_runs.append({'run': run, 'live_count': live_count, 'progress': progress})
 
-    # ── Sparklines: 1 grouped query replaces 112 individual ones ────────────
+    # ── Opt 3: Cache everything expensive for 60 seconds ────────────────────
+    # Cache key changes at midnight so sparklines reset for the new day.
+    cache_key = f'dashboard_home_{today_start.date()}'
+    cached = cache.get(cache_key)
+
+    if cached is not None:
+        # Use cached heavy data, but inject fresh running_runs from above
+        cached['running_runs'] = running_runs
+        # Also refresh the fast KPI counts that change frequently
+        cached['articles_today'] = Article.objects.filter(status='published', published_at__gte=today_start).count()
+        cached['total_published'] = Article.objects.filter(status='published').count()
+        return render(request, 'dashboard/dashboard.html', cached)
+
+    week_start = today_start - datetime.timedelta(days=6)
+    sparkline_start = today_start - datetime.timedelta(days=13)
+
+    sites = list(Site.objects.all().prefetch_related('api_keys'))
+    site_ids = [s.id for s in sites]
+
+    # ── KPI strip ───────────────────────────────────────────────────────────
+    total_sites = len(sites)
+    autopilot_enabled = SiteAutomation.objects.filter(is_enabled=True).count()
+    articles_today = Article.objects.filter(status='published', published_at__gte=today_start).count()
+    articles_week = Article.objects.filter(status='published', published_at__gte=week_start).count()
+    total_published = Article.objects.filter(status='published').count()
+    active_keys = APIKey.objects.filter(is_active=True, provider='groq').count()
+
     sparkline_map = {}  # { site_id: { date_obj: count } }
     for row in (
         Article.objects
@@ -206,8 +220,11 @@ def dashboard_home(request):
         'total_published': total_published,
         'active_keys': active_keys,
     }
-    return render(request, 'dashboard/dashboard.html', context)
 
+    # Store the expensive parts in cache for 60 seconds
+    cache.set(cache_key, context, timeout=60)
+
+    return render(request, 'dashboard/dashboard.html', context)
 
 
 def site_list(request):

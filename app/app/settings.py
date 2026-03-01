@@ -158,3 +158,14 @@ CELERY_TIMEZONE = TIME_ZONE
 # django-celery-beat
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 
+# Opt 3: Redis-backed cache for dashboard views (uses db 1, separate from Celery on db 0)
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': 'redis://redis:6379/1',
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+        },
+        'TIMEOUT': 60,  # default TTL 60s — overridden per-view where needed
+    }
+}

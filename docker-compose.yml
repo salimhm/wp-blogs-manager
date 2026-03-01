@@ -8,22 +8,41 @@ services:
       - ./.env
     ports:
     - "5434:5432"
+    # Opt 5: PostgreSQL memory tuning — reduce footprint for shared-server environment
+    command: >
+      postgres
+      -c shared_buffers=128MB
+      -c effective_cache_size=256MB
+      -c work_mem=4MB
+      -c max_connections=30
+      -c maintenance_work_mem=32MB
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    # Opt 4: memory limit — container killed & restarted before it can crash the host
+    mem_limit: 256m
+    memswap_limit: 256m
     networks:
       - wp_ai_publisher_network
 
   web:
     container_name: wp_ai_publisher_app
     build: ./app
+    # Opt 2: 2 gevent workers instead of 3 prefork.
+    # Gevent coroutines share one process; saves ~250MB vs prefork.
     command: >
       sh -c "python manage.py migrate &&
         python manage.py collectstatic --noinput &&
-        gunicorn --bind 0.0.0.0:8000 --workers 3 --timeout 600 --reload app.wsgi:application"
+        gunicorn --bind 0.0.0.0:8000
+          --workers 2
+          --worker-class gevent
+          --worker-connections 50
+          --timeout 600
+          --reload
+          app.wsgi:application"
     volumes:
       - ./app:/app
       - static_volume:/app/staticfiles
@@ -38,6 +57,8 @@ services:
       redis:
         condition: service_started
     restart: unless-stopped
+    mem_limit: 600m
+    memswap_limit: 600m
     networks:
       - wp_ai_publisher_network
 
@@ -49,11 +70,17 @@ services:
     networks:
       - wp_ai_publisher_network
     restart: unless-stopped
+    mem_limit: 64m
+    memswap_limit: 64m
 
   celery_worker:
     container_name: wp_ai_publisher_celery_worker
     build: ./app
-    command: celery -A app worker -l info
+    # Opt 1: gevent pool — 20 coroutines share ONE process.
+    # Tasks spend most time waiting on Groq API (I/O), so gevent is ideal.
+    # Before: 6 prefork processes x ~250MB = ~1.5GB peak
+    # After:  1 gevent process  x ~300MB regardless of concurrency
+    command: celery -A app worker -l info --pool=gevent --concurrency=20
     volumes:
       - ./app:/app
     env_file:
@@ -62,6 +89,8 @@ services:
       - db
       - redis
     restart: unless-stopped
+    mem_limit: 1200m
+    memswap_limit: 1200m
     networks:
       - wp_ai_publisher_network
 
@@ -78,6 +107,8 @@ services:
       - db
       - redis
     restart: unless-stopped
+    mem_limit: 128m
+    memswap_limit: 128m
     networks:
       - wp_ai_publisher_network
 
@@ -93,6 +124,8 @@ services:
     depends_on:
       - web
     restart: unless-stopped
+    mem_limit: 64m
+    memswap_limit: 64m
     networks:
       - wp_ai_publisher_network
 
@@ -104,6 +137,8 @@ services:
     depends_on:
       - db
     restart: unless-stopped
+    mem_limit: 64m
+    memswap_limit: 64m
     networks:
       - wp_ai_publisher_network
     environment:

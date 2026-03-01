@@ -12,3 +12,5 @@ django-celery-results>=2.5.0
 redis>=5.0.0
 PyJWT>=2.8.0
 youtube-search
+gevent>=23.9.0
+django-redis>=5.4.0
