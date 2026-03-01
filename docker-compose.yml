@@ -22,9 +22,6 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
-    # Opt 4: memory limit — container killed & restarted before it can crash the host
-    mem_limit: 256m
-    memswap_limit: 256m
     networks:
       - wp_ai_publisher_network
 
@@ -51,8 +48,6 @@ services:
       redis:
         condition: service_started
     restart: unless-stopped
-    mem_limit: 900m
-    memswap_limit: 900m
     networks:
       - wp_ai_publisher_network
 
@@ -64,8 +59,6 @@ services:
     networks:
       - wp_ai_publisher_network
     restart: unless-stopped
-    mem_limit: 64m
-    memswap_limit: 64m
 
   celery_worker:
     container_name: wp_ai_publisher_celery_worker
@@ -83,8 +76,6 @@ services:
       - db
       - redis
     restart: unless-stopped
-    mem_limit: 1200m
-    memswap_limit: 1200m
     networks:
       - wp_ai_publisher_network
 
@@ -101,8 +92,6 @@ services:
       - db
       - redis
     restart: unless-stopped
-    mem_limit: 128m
-    memswap_limit: 128m
     networks:
       - wp_ai_publisher_network
 
@@ -118,8 +107,6 @@ services:
     depends_on:
       - web
     restart: unless-stopped
-    mem_limit: 64m
-    memswap_limit: 64m
     networks:
       - wp_ai_publisher_network
 
@@ -131,8 +118,6 @@ services:
     depends_on:
       - db
     restart: unless-stopped
-    mem_limit: 64m
-    memswap_limit: 64m
     networks:
       - wp_ai_publisher_network
     environment:
