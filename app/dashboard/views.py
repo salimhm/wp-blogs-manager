@@ -14,6 +14,7 @@ from .utils import (
     get_cloudflare_zones
 )
 from .auth import authenticate_user, generate_jwt_token, jwt_required
+from django.views.decorators.http import require_POST
 
 
 # ============================================
