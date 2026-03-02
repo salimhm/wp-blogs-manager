@@ -57,6 +57,8 @@ class APIKey(models.Model):
     api_key = models.CharField(max_length=255, help_text="API key (encrypted)")
     model_name = models.CharField(max_length=100, blank=True, help_text="e.g., llama-3.3-70b-versatile")
     is_active = models.BooleanField(default=True)
+    is_flagged = models.BooleanField(default=False, help_text="Key permanently banned/restricted by provider")
+    flag_reason = models.CharField(max_length=255, blank=True, help_text="Reason the key was flagged")
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

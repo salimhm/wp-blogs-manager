@@ -23,6 +23,7 @@ urlpatterns = [
     # API Key management
     path('sites/<str:site_domain>/api-keys/', views.manage_api_keys, name='manage_api_keys'),
     path('sites/<str:site_domain>/api-keys/<int:key_id>/delete/', views.delete_api_key, name='delete_api_key'),
+    path('sites/<str:site_domain>/api-keys/<int:key_id>/unflag/', views.unflag_api_key, name='unflag_api_key'),
     
     # Proxy management
     path('proxies/', views.proxy_list, name='proxy_list'),

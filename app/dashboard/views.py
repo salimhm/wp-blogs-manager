@@ -494,6 +494,18 @@ def delete_api_key(request, site_domain, key_id):
     return redirect('dashboard:manage_api_keys', site_domain=site_domain)
 
 
+@require_POST
+def unflag_api_key(request, site_domain, key_id):
+    """Clear the flagged status on an API key (manual override)."""
+    site = get_object_or_404(Site, domain=site_domain)
+    api_key = get_object_or_404(APIKey, id=key_id, site=site)
+    api_key.is_flagged = False
+    api_key.flag_reason = ''
+    api_key.save(update_fields=['is_flagged', 'flag_reason'])
+    messages.success(request, f'Key ...{api_key.api_key[-4:]} unflagged successfully.')
+    return redirect('dashboard:manage_api_keys', site_domain=site_domain)
+
+
 def bulk_key_tester(request):
     """View to load all API keys across all sites for bulk testing."""
     api_keys = APIKey.objects.filter(provider='groq').select_related('site').all()

@@ -197,18 +197,21 @@ def generate_single_article(self, article_id, run_id=None):
         article.status = 'generating'
         article.save()
         
-        # 1. Get ALL active API keys for this site (for cross-provider fallback)
-        api_key_objs = APIKey.objects.filter(site=site, is_active=True)
+        # Get all active, non-flagged API keys for this site
+        api_key_objs = APIKey.objects.filter(site=site, is_active=True, is_flagged=False)
         if not api_key_objs.exists():
-            raise Exception("No active API keys found for site")
+            raise Exception(f"[{site.domain}] No active, non-flagged API keys found for site")
         
         # Convert to list of dicts for the fallback function
         api_keys = []
         for k in api_key_objs:
-            masked_key = f"{k.api_key[:4]}...{k.api_key[-4:]}" if len(k.api_key) > 8 else "***"
-            print(f"Loaded API key for {k.provider}: {masked_key}")
-            # api_keys list passed to utils needs simple dicts
-            api_keys.append({'provider': k.provider, 'api_key': k.api_key, 'is_active': k.is_active})
+            api_keys.append({
+                'provider': k.provider,
+                'api_key': k.api_key,
+                'is_active': k.is_active,
+                'is_flagged': k.is_flagged,
+            })
+        print(f"[{site.domain}] [{article.title or article.keyword_index}] Using {len(api_keys)} active key(s) for generation")
             
         # Get proxy
         proxy_obj = ProxySettings.objects.filter(site=site, is_active=True).first()
@@ -235,8 +238,8 @@ def generate_single_article(self, article_id, run_id=None):
         if not h2s:
             raise Exception(f"No H2s found in keyword data. Type: {type(h2_data)}")
         
-        # 3. Generate Content with cross-provider fallback
-        content_data = generate_article_content(h2s, api_keys, proxy_dict)
+        # 3. Generate content
+        content_data = generate_article_content(h2s, api_keys, proxy_dict, site_domain=site.domain)
         
         # 4. Update Article Record
         article.title = content_data['title']
@@ -274,8 +277,8 @@ def generate_single_article(self, article_id, run_id=None):
                     'meta': content_data.get('meta', {})
                 }
             )
-        except Exception as log_error:
-            print(f"Failed to create success log: {log_error}")
+        except Exception as log_err:
+            print(f"[{site.domain}] Failed to create SiteLog: {log_err}")
         
         # 5. Publish to WordPress
         if site.is_verified:

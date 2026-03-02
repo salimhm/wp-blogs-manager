@@ -572,7 +572,7 @@ def _clean_llm_content(content: str) -> str:
                 content = content[idx:].strip()
     return content
 
-def call_groq_with_fallback(api_keys: list, prompt: str, max_tokens: int = 8000, proxy: Optional[dict] = None) -> tuple[str, dict]:
+def call_groq_with_fallback(api_keys: list, prompt: str, max_tokens: int = 8000, proxy: Optional[dict] = None, site_domain: str = None) -> tuple[str, dict]:
     """
     Call Groq API with robust multi-key, multi-model fallback and strict rate-limit handling.
     Creates a new connection per request to ensure rotating proxies assign a new IP.
@@ -604,6 +604,8 @@ def call_groq_with_fallback(api_keys: list, prompt: str, max_tokens: int = 8000,
         for config in api_keys_copy:
             if not config.get('is_active') or config.get('provider') != 'groq':
                 continue
+            if config.get('is_flagged'):
+                continue  # Permanently restricted — never retry
                 
             api_key = config['api_key']
             
@@ -635,7 +637,8 @@ def call_groq_with_fallback(api_keys: list, prompt: str, max_tokens: int = 8000,
                 # We use a new session/request each time (requests.post) to ensure proxy IP rotation happens dynamically.
                 try:
                     proxy_info = f"via {list(proxy.values())[0][:30]}..." if proxy else "DIRECT"
-                    print(f"[LLM REQUEST] Groq/{model} [Key ending in {api_key[-4:]}] - {proxy_info}")
+                    domain_tag = f"[{site_domain}] " if site_domain else ""
+                    print(f"{domain_tag}[LLM REQUEST] Groq/{model} [Key ending in {api_key[-4:]}] - {proxy_info}")
                     
                     response = requests.post(url, json=data, headers=headers, timeout=160, proxies=proxy)
                     
@@ -689,15 +692,40 @@ def call_groq_with_fallback(api_keys: list, prompt: str, max_tokens: int = 8000,
                         print(f"Groq API Key {api_key[-4:]} with {model} rate limited. Cooldown: {wait_time:.1f}s")
                         continue
                         
-                    # If we get here, it's a non-200 and non-rate-limit error
+                    # Non-200, non-429: could be organization_restricted or other permanent error
                     error_text = response.text
                     if len(error_text) > 300:
                         error_text = error_text[:300] + "... [TRUNCATED]"
-                    print(f"Groq returned {response.status_code}: {error_text}")
+
+                    # Check for permanently restricted organization key
+                    try:
+                        err_json = response.json()
+                        err_code = err_json.get('error', {}).get('code', '')
+                        err_msg  = err_json.get('error', {}).get('message', '')
+                        if err_code == 'organization_restricted':
+                            # Mark the key as flagged in the DB so it's excluded going forward
+                            try:
+                                from .models import APIKey
+                                APIKey.objects.filter(api_key=api_key).update(
+                                    is_flagged=True,
+                                    flag_reason=err_msg or 'Organization restricted by Groq'
+                                )
+                                domain_tag = f"[{site_domain}] " if site_domain else ""
+                                print(f"{domain_tag}[FLAGGED] Key ending in {api_key[-4:]} permanently restricted. Flagged in DB.")
+                            except Exception as flag_err:
+                                print(f"Failed to flag key in DB: {flag_err}")
+                            errors.append(f"Key {api_key[-4:]} flagged: organization_restricted")
+                            break  # Skip remaining models for this key
+                    except Exception:
+                        pass
+
+                    domain_tag = f"[{site_domain}] " if site_domain else ""
+                    print(f"{domain_tag}Groq returned {response.status_code}: {error_text}")
                     response.raise_for_status()
                     
                 except Exception as e:
-                    print(f"Request failed for {model}: {e}. The rotating proxy might have failed. Will retry.")
+                    domain_tag = f"[{site_domain}] " if site_domain else ""
+                    print(f"{domain_tag}Request failed for {model}: {e}. The rotating proxy might have failed. Will retry.")
                     errors.append(f"Proxy/Network Error: {str(e)}")
                     continue
                     
@@ -716,10 +744,10 @@ def call_groq_with_fallback(api_keys: list, prompt: str, max_tokens: int = 8000,
     raise Exception("Failed to generate content after trying multiple keys and proxy rotations.")
 
 # Keep fallback signature for compatibility, but route exclusively to Groq
-def call_llm_with_fallback(api_keys: list, prompt: str, max_tokens: int = 4096, proxy: Optional[dict] = None) -> tuple[str, dict]:
-    return call_groq_with_fallback(api_keys, prompt, max_tokens, proxy)
+def call_llm_with_fallback(api_keys: list, prompt: str, max_tokens: int = 4096, proxy: Optional[dict] = None, site_domain: str = None):
+    return call_groq_with_fallback(api_keys, prompt, max_tokens=max_tokens, proxy=proxy, site_domain=site_domain)
 
-def generate_article_content(h2s: list, api_keys: list, proxy: Optional[dict] = None) -> dict:
+def generate_article_content(h2s: list, api_keys: list, proxy: Optional[dict] = None, site_domain: str = None) -> dict:
     """
     Generate a full article from H2 headings using a single mega-prompt to minimize proxy bandwidth.
     """
@@ -796,7 +824,7 @@ CRITICAL INSTRUCTIONS:
 - Ensure the JSON is completely valid and properly closed at the end. Do not exceed typical output length limits before closing the object."""
     
     try:
-        content_json_str, meta = call_llm_with_fallback(api_keys, mega_prompt, max_tokens=8000, proxy=proxy)
+        content_json_str, meta = call_llm_with_fallback(api_keys, mega_prompt, max_tokens=8000, proxy=proxy, site_domain=site_domain)
         meta['step'] = 'mega_prompt'
         generation_stats.append(meta)
         

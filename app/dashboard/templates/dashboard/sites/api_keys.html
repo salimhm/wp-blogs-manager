@@ -91,8 +91,22 @@
                     <td>{{ key.get_provider_display }}</td>
                     <td><code>{{ key.api_key|slice:":8" }}...{{ key.api_key|slice:"-4:" }}</code></td>
                     <td>{{ key.model_name|default:"-" }}</td>
-                    <td><span class="badge {% if key.is_active %}badge-success{% else %}badge-secondary{% endif %}">{% if key.is_active %}Active{% else %}Inactive{% endif %}</span></td>
                     <td>
+                        {% if key.is_flagged %}
+                            <span class="badge badge-danger" title="{{ key.flag_reason }}">🚫 Flagged</span>
+                        {% elif key.is_active %}
+                            <span class="badge badge-success">Active</span>
+                        {% else %}
+                            <span class="badge badge-secondary">Inactive</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if key.is_flagged %}
+                        <form method="post" action="{% url 'dashboard:unflag_api_key' site.domain key.id %}" style="display:inline;">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-sm btn-warning" onclick="return confirm('Unflag this key?')">Unflag</button>
+                        </form>
+                        {% endif %}
                         <form method="post" action="{% url 'dashboard:delete_api_key' site.domain key.id %}" style="display:inline;">
                             {% csrf_token %}
                             <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete this key?')">Delete</button>
