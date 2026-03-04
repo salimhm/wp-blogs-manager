@@ -1,8 +1,24 @@
+import re
 import datetime
 from celery import shared_task
+from celery.signals import worker_ready
 from django.utils import timezone
-from .models import DailyRun, Article, APIKey, ProxySettings, Site, SiteLog, KeywordList
+from .models import DailyRun, Article, APIKey, ProxySettings, Site, SiteLog, KeywordList, AffiliateJob, AffiliateConfig
 from .utils import generate_article_content, publish_to_wordpress
+
+
+@worker_ready.connect
+def resume_affiliate_jobs_on_startup(sender, **kwargs):
+    """
+    When a Celery worker boots (or restarts), re-queue any AffiliateJob
+    that is stuck in 'running' or 'pending' state from a previous crash.
+    """
+    stuck = AffiliateJob.objects.filter(status__in=['running', 'pending'])
+    for job in stuck:
+        job.status = 'pending'
+        job.save(update_fields=['status'])
+        job.append_log('[RESUME] Worker restarted — re-queuing job.')
+        start_affiliate_job.delay(job.id)
 
 @shared_task
 def process_daily_run(run_id):
@@ -534,3 +550,155 @@ def check_site_automations():
         triggered_count += 1
             
     return f"Triggered {triggered_count} automations"
+
+
+@shared_task
+def start_affiliate_job(job_id: int):
+    """
+    Celery task: Runs an Amazon affiliate product injection job.
+
+    Flow per slug:
+      1. Fetch WP post by slug (proxied)
+      2. Check for existing amazon-prd block → skip if present
+      3. Call Groq (proxied) → extract 1-2 Amazon search keywords
+      4. Scrape Amazon (proxied, Redis-cached) → get products
+      5. Inject product block after paragraph N into WP content
+      6. PATCH WP post (proxied)
+    """
+    from .affiliate_utils import (
+        extract_keywords_with_groq,
+        scrape_amazon_products,
+        build_product_block_html,
+        inject_into_content,
+        fetch_wp_posts_by_slugs,
+        patch_wp_post_content,
+    )
+
+    try:
+        job = AffiliateJob.objects.get(id=job_id)
+    except AffiliateJob.DoesNotExist:
+        return f"AffiliateJob {job_id} not found"
+
+    job.status = 'running'
+    job.save(update_fields=['status'])
+
+    site = job.site
+
+    # ── Proxy (used for Groq + Amazon only — not WP) ──────────────────────
+    proxy_obj = ProxySettings.objects.filter(site=site, is_active=True).first()
+    if not proxy_obj:
+        job.status = 'failed'
+        job.save(update_fields=['status'])
+        job.append_log("[ERROR] No active proxy configured for this site. Groq and Amazon requests require a proxy. Aborting.")
+        return "No proxy configured"
+
+    proxy_url = proxy_obj.get_proxy_url()
+    proxy_dict = {'http': proxy_url, 'https': proxy_url}
+
+    # ── Affiliate tag from site config (single source of truth) ──────────
+    try:
+        config = AffiliateConfig.objects.get(site=site)
+        affiliate_tag = config.affiliate_tag
+    except AffiliateConfig.DoesNotExist:
+        job.status = 'failed'
+        job.save(update_fields=['status'])
+        job.append_log("[FATAL] No affiliate config found for this site. Configure it first.")
+        return "No affiliate config"
+
+    # ── Groq API keys ─────────────────────────────────────────────────────
+    api_key_objs = APIKey.objects.filter(site=site, is_active=True, is_flagged=False, provider='groq')
+    api_keys = [{'provider': k.provider, 'api_key': k.api_key, 'is_active': True, 'is_flagged': False}
+                for k in api_key_objs]
+
+    job.append_log(f"Starting affiliate job for {site.domain}")
+    job.append_log(f"Tag: {affiliate_tag} | After paragraph: {job.insert_after_paragraph} | Max products: {job.max_products}")
+    job.append_log(f"Proxy: {proxy_obj.host}:{proxy_obj.port} (Groq + Amazon only, WP direct)")
+
+    slugs = job.slugs_json or []
+    if not slugs:
+        job.status = 'failed'
+        job.save(update_fields=['status'])
+        job.append_log("[FATAL] No slugs provided in this job.")
+        return "No slugs"
+
+    try:
+        # 1. Fetch WP posts for all slugs (direct — own server, no proxy)
+        job.append_log(f"Fetching {len(slugs)} posts from WP (direct)...")
+        posts = fetch_wp_posts_by_slugs(site, slugs)
+        job.total_articles = len(posts)
+        job.save(update_fields=['total_articles'])
+        job.append_log(f"Fetched {len(posts)}/{len(slugs)} posts successfully")
+
+        for post in posts:
+            post_id = post.get('id')
+            raw_content = post.get('content', {}).get('rendered', '')
+            title_raw = post.get('title', {}).get('rendered', '')
+            title = re.sub(r'<[^>]+>', '', title_raw).strip()
+
+            job.processed += 1
+
+            # 2. Skip if already injected
+            if 'class="amazon-prd"' in raw_content or "class='amazon-prd'" in raw_content:
+                job.skipped += 1
+                job.save(update_fields=['processed', 'skipped'])
+                job.append_log(f"[SKIP] '{title[:60]}' — already has amazon-prd block")
+                continue
+
+            try:
+                # 3. Groq keyword extraction (proxied via call_groq_with_fallback)
+                content_snippet = re.sub(r'<[^>]+>', '', raw_content)[:300]
+                if api_keys:
+                    keywords = extract_keywords_with_groq(title, content_snippet, api_keys, proxy=proxy_dict)
+                else:
+                    keywords = [" ".join(title.split()[:4])]
+                job.append_log(f"[KW] '{title[:50]}' → {keywords}")
+
+                # 4. Amazon scrape (proxied)
+                products = []
+                for kw in keywords:
+                    products = scrape_amazon_products(kw, affiliate_tag, proxy=proxy_dict, max_products=job.max_products)
+                    if products:
+                        break
+
+                if not products:
+                    job.errors += 1
+                    job.save(update_fields=['processed', 'errors'])
+                    job.append_log(f"[ERROR] No products for '{title[:50]}' — kw: {keywords}")
+                    continue
+
+                # 5. Build + inject
+                block_html = build_product_block_html(products)
+                new_content = inject_into_content(raw_content, block_html, job.insert_after_paragraph)
+
+                # 6. Patch WP (direct — own server, no proxy)
+                success = patch_wp_post_content(site, post_id, new_content)
+                if success:
+                    job.injected += 1
+                    job.save(update_fields=['processed', 'injected'])
+                    job.append_log(f"[OK] '{title[:60]}' — {len(products)} products injected")
+                else:
+                    job.errors += 1
+                    job.save(update_fields=['processed', 'errors'])
+                    job.append_log(f"[ERROR] WP PATCH failed for post #{post_id}")
+
+            except Exception as post_err:
+                job.errors += 1
+                job.save(update_fields=['processed', 'errors'])
+                job.append_log(f"[ERROR] '{title[:50]}': {post_err}")
+
+            import time as _time
+            _time.sleep(0.5)
+
+        job.status = 'completed'
+        job.save(update_fields=['status'])
+        job.append_log(
+            f"Done — {job.injected} injected, {job.skipped} skipped, "
+            f"{job.errors} errors out of {job.total_articles} posts"
+        )
+
+    except Exception as e:
+        job.status = 'failed'
+        job.save(update_fields=['status'])
+        job.append_log(f"[FATAL] Job failed: {e}")
+
+    return f"Affiliate job {job_id} finished"

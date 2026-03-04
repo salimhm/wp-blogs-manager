@@ -64,4 +64,10 @@ urlpatterns = [
     path('api/test-proxy/', views.api_test_proxy, name='api_test_proxy'),
     path('api/generate-article/', views.api_generate_article, name='api_generate_article'),
     path('api/bulk-generate/', views.api_bulk_generate_articles, name='api_bulk_generate'),
+
+    # Amazon Affiliate
+    path('affiliate/', views.affiliate_home, name='affiliate_home'),
+    path('affiliate/<int:job_id>/', views.affiliate_job_detail, name='affiliate_job_detail'),
+    path('affiliate/<int:job_id>/status/', views.affiliate_job_status_api, name='affiliate_job_status_api'),
+    path('affiliate/<int:job_id>/cancel/', views.affiliate_cancel_job, name='affiliate_cancel_job'),
 ]

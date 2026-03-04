@@ -4,7 +4,7 @@ from django.http import JsonResponse, StreamingHttpResponse
 from django.views.decorators.http import require_http_methods
 from django.contrib import messages
 
-from .models import Site, APIKey, ProxySettings, CloudflareSettings, SiteLog
+from .models import Site, APIKey, ProxySettings, CloudflareSettings, SiteLog, AffiliateConfig, AffiliateJob
 from .utils import (
     generate_secure_password, 
     generate_username,
@@ -1676,3 +1676,138 @@ def daily_run_history(request, site_domain):
         'runs': runs
     })
 
+
+# ============================================================
+# Amazon Affiliate Views
+# ============================================================
+
+def affiliate_home(request):
+    """
+    Affiliate dashboard.
+    POST action=save_config: saves per-site affiliate config.
+    POST action=start_job: parses slug file, creates and fires the Celery job.
+    """
+    if request.method == 'POST':
+        action = request.POST.get('action', 'start_job')
+
+        # ── Save per-site config ──────────────────────────────────────────
+        if action == 'save_config':
+            site_id = request.POST.get('site_id')
+            site = get_object_or_404(Site, id=site_id)
+            affiliate_tag = request.POST.get('affiliate_tag', '').strip()
+            insert_after = max(1, int(request.POST.get('insert_after_paragraph', 1)))
+            max_products = max(1, min(5, int(request.POST.get('max_products', 3))))
+
+            if not affiliate_tag:
+                messages.error(request, 'Affiliate tag is required.')
+            else:
+                AffiliateConfig.objects.update_or_create(
+                    site=site,
+                    defaults={
+                        'affiliate_tag': affiliate_tag,
+                        'insert_after_paragraph': insert_after,
+                        'max_products': max_products,
+                    }
+                )
+                messages.success(request, f'Config saved for {site.domain}')
+            return redirect('dashboard:affiliate_home')
+
+        # ── Start a new job ───────────────────────────────────────────────
+        site_id = request.POST.get('site_id')
+        site = get_object_or_404(Site, id=site_id)
+
+        # Config must exist (tag configured once per site)
+        try:
+            config = AffiliateConfig.objects.get(site=site)
+        except AffiliateConfig.DoesNotExist:
+            messages.error(request, f'No affiliate config for {site.domain}. Save the config first.')
+            return redirect('dashboard:affiliate_home')
+
+        # Parse slug file — supports .txt (one per line) and .csv (first column)
+        slug_file = request.FILES.get('slug_file')
+        if not slug_file:
+            messages.error(request, 'Please upload a slug file.')
+            return redirect('dashboard:affiliate_home')
+
+        try:
+            raw_text = slug_file.read().decode('utf-8', errors='replace')
+        except Exception:
+            messages.error(request, 'Could not read uploaded file. Ensure it is plain text (UTF-8).')
+            return redirect('dashboard:affiliate_home')
+
+        filename = slug_file.name.lower()
+        if filename.endswith('.csv'):
+            import csv, io
+            reader = csv.reader(io.StringIO(raw_text))
+            slugs = []
+            for i, row in enumerate(reader):
+                if not row:
+                    continue
+                val = row[0].strip()
+                # Skip header row if first value looks like a header (no slash, letters only)
+                if i == 0 and '/' not in val and not val.startswith('/'):
+                    continue
+                if val:
+                    slugs.append(val)
+        else:
+            # .txt: one slug per line
+            slugs = [line.strip() for line in raw_text.splitlines() if line.strip()]
+
+        if not slugs:
+            messages.error(request, 'Slug file appears to be empty.')
+            return redirect('dashboard:affiliate_home')
+
+        insert_after = max(1, int(request.POST.get('insert_after_paragraph', config.insert_after_paragraph)))
+        max_products = max(1, min(5, int(request.POST.get('max_products', config.max_products))))
+
+        job = AffiliateJob.objects.create(
+            site=site,
+            affiliate_tag=config.affiliate_tag,
+            insert_after_paragraph=insert_after,
+            max_products=max_products,
+            slugs_json=slugs,
+            status='pending',
+        )
+
+        from .tasks import start_affiliate_job
+        start_affiliate_job.delay(job.id)
+        messages.success(request, f'Job started for {site.domain} — {len(slugs)} slugs queued')
+        return redirect('dashboard:affiliate_job_detail', job_id=job.id)
+
+    from django.db.models import Prefetch
+    sites = Site.objects.all().select_related('affiliate_config').prefetch_related(
+        Prefetch('affiliate_jobs', queryset=AffiliateJob.objects.order_by('-created_at'))
+    )
+    return render(request, 'dashboard/affiliate/list.html', {'sites': sites})
+
+
+def affiliate_job_detail(request, job_id):
+    """Show live progress for a single affiliate job."""
+    job = get_object_or_404(AffiliateJob, id=job_id)
+    return render(request, 'dashboard/affiliate/job_detail.html', {'job': job})
+
+
+def affiliate_job_status_api(request, job_id):
+    """JSON polling endpoint — returns counters + last 30 log lines."""
+    job = get_object_or_404(AffiliateJob, id=job_id)
+    log_lines = job.log_output.strip().split('\n') if job.log_output else []
+    return JsonResponse({
+        'status': job.status,
+        'total_articles': job.total_articles,
+        'processed': job.processed,
+        'skipped': job.skipped,
+        'injected': job.injected,
+        'errors': job.errors,
+        'log_tail': log_lines[-30:],
+    })
+
+
+def affiliate_cancel_job(request, job_id):
+    """Cancel a running affiliate job."""
+    job = get_object_or_404(AffiliateJob, id=job_id)
+    if job.status == 'running':
+        job.status = 'failed'
+        job.save(update_fields=['status'])
+        job.append_log('[CANCELLED] Job cancelled by user.')
+        messages.warning(request, 'Job cancelled.')
+    return redirect('dashboard:affiliate_job_detail', job_id=job.id)

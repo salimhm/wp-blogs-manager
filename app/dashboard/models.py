@@ -261,3 +261,76 @@ class SiteAutomation(models.Model):
     def __str__(self):
         status = "ON" if self.is_enabled else "OFF"
         return f"{self.site.domain} Automation ({status})"
+
+
+class AffiliateConfig(models.Model):
+    """Amazon affiliate settings per site."""
+    site = models.OneToOneField(Site, on_delete=models.CASCADE, related_name='affiliate_config')
+    affiliate_tag = models.CharField(max_length=100, help_text="Amazon affiliate tag, e.g. mysite-20")
+    insert_after_paragraph = models.PositiveIntegerField(
+        default=1,
+        help_text="Insert product block after this paragraph number (1 = after intro paragraph)"
+    )
+    max_products = models.PositiveIntegerField(
+        default=3,
+        help_text="Maximum number of products to show per article (1-5)"
+    )
+    is_enabled = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Affiliate Config"
+        verbose_name_plural = "Affiliate Configs"
+
+    def __str__(self):
+        return f"{self.site.domain} — tag: {self.affiliate_tag}"
+
+
+class AffiliateJob(models.Model):
+    """Tracks a bulk Amazon affiliate product-injection run."""
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('running', 'Running'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+    ]
+
+    site = models.ForeignKey(Site, on_delete=models.CASCADE, related_name='affiliate_jobs')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+
+    # Config snapshot (captured at job start so UI shows exactly what was used)
+    affiliate_tag = models.CharField(max_length=100, blank=True)
+    insert_after_paragraph = models.PositiveIntegerField(default=1)
+    max_products = models.PositiveIntegerField(default=3)
+
+    # Slugs to process (parsed from uploaded file, stored as JSON list)
+    slugs_json = models.JSONField(default=list, blank=True, help_text="List of WP slugs to process")
+
+    # Progress counters
+    total_articles = models.IntegerField(default=0, help_text="Total WP posts fetched")
+    processed = models.IntegerField(default=0, help_text="Articles attempted")
+    skipped = models.IntegerField(default=0, help_text="Already had amazon-prd block")
+    injected = models.IntegerField(default=0, help_text="Successfully injected")
+    errors = models.IntegerField(default=0, help_text="Failed articles")
+
+    # Running log — appended per article
+    log_output = models.TextField(blank=True, default='')
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Affiliate Job"
+        verbose_name_plural = "Affiliate Jobs"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.site.domain} affiliate job #{self.pk} ({self.status})"
+
+    def append_log(self, message: str):
+        """Append a timestamped line to the job log and save."""
+        from django.utils import timezone
+        ts = timezone.now().strftime('%H:%M:%S')
+        self.log_output += f"[{ts}] {message}\n"
+        self.save(update_fields=['log_output', 'updated_at'])

@@ -1,0 +1,345 @@
+"""
+affiliate_utils.py
+Amazon Affiliate product insertion utilities.
+"""
+
+import re
+import time
+import random
+import requests
+from typing import Optional
+
+# ── User-agents rotated per Amazon request ────────────────────────────────
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:123.0) Gecko/20100101 Firefox/123.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+]
+
+# ── Amazon search URL ─────────────────────────────────────────────────────
+_AMAZON_SEARCH_URL = "https://www.amazon.com/s"
+
+# ── Redis cache TTL for keyword and product results ───────────────────────
+_KEYWORD_CACHE_TTL = 60 * 60 * 24        # 24 hours
+_PRODUCTS_CACHE_TTL = 60 * 60 * 24       # 24 hours
+
+
+# =============================================================================
+# Groq keyword extraction
+# =============================================================================
+
+def extract_keywords_with_groq(title: str, content_snippet: str, api_keys: list, proxy: Optional[dict] = None) -> list[str]:
+    """
+    Use a fast Groq call to extract 1-2 short Amazon search queries for the article.
+    Returns a list of keyword strings.
+    Cached in Redis by title hash to avoid redundant LLM calls.
+    """
+    from django.core.cache import cache
+    import hashlib
+    import json
+
+    cache_key = f"affiliate_kw_{hashlib.md5(title.encode()).hexdigest()}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    from .utils import call_groq_with_fallback
+
+    prompt = f"""You are a shopping assistant. Given this article title and opening content, output 1 to 2 short Amazon product search queries that readers of this article would be most likely to buy.
+
+Article title: {title}
+Opening content: {content_snippet[:300]}
+
+Respond ONLY with a JSON array of strings, for example: ["air fryer basket", "pizza rolls snacks"]
+No explanation, no markdown, just the JSON array."""
+
+    try:
+        result, _ = call_groq_with_fallback(
+            api_keys=api_keys,
+            prompt=prompt,
+            max_tokens=60,
+            proxy=proxy,
+        )
+        keywords = json.loads(result.strip())
+        if isinstance(keywords, list):
+            keywords = [k.strip() for k in keywords if isinstance(k, str) and k.strip()][:2]
+            cache.set(cache_key, keywords, timeout=_KEYWORD_CACHE_TTL)
+            return keywords
+    except Exception as e:
+        print(f"[affiliate] Keyword extraction failed: {e}")
+
+    # Fallback: use first 3 words of title
+    fallback = [" ".join(title.split()[:4])]
+    cache.set(cache_key, fallback, timeout=_KEYWORD_CACHE_TTL)
+    return fallback
+
+
+# =============================================================================
+# Amazon scraper
+# =============================================================================
+
+def scrape_amazon_products(keyword: str, affiliate_tag: str, proxy: Optional[dict] = None, max_products: int = 3) -> list[dict]:
+    """
+    Scrape the Amazon search results page for `keyword`.
+    Returns a list of product dicts: {title, price, asin, image_url, affiliate_url}.
+    Results are Redis-cached for 24h to avoid duplicate proxy requests.
+
+    Bandwidth optimizations:
+    - gzip compression via Accept-Encoding header
+    - streams response and reads only first 80KB (search results are in the top of the page)
+    - no JS engine — pure requests + BeautifulSoup
+    - per-keyword Redis cache (24h TTL)
+    """
+    from django.core.cache import cache
+    import hashlib
+
+    cache_key = f"affiliate_products_{hashlib.md5(f'{keyword}:{max_products}'.encode()).hexdigest()}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        print(f"[affiliate] Cache hit for '{keyword}'")
+        return cached
+
+    headers = {
+        "User-Agent": random.choice(_USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",  # key bandwidth optimization
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+    }
+
+    params = {
+        "k": keyword,
+        "ref": "nb_sb_noss",
+    }
+
+    products = []
+    try:
+        response = requests.get(
+            _AMAZON_SEARCH_URL,
+            params=params,
+            headers=headers,
+            proxies=proxy,
+            timeout=20,
+            stream=True,  # stream so we can stop reading early
+        )
+
+        # Read only first 80KB — product listings are in the first 60-80KB of the search page
+        raw_bytes = b""
+        for chunk in response.iter_content(chunk_size=8192):
+            raw_bytes += chunk
+            if len(raw_bytes) >= 80 * 1024:
+                break
+
+        html = raw_bytes.decode("utf-8", errors="replace")
+
+        # Detect CAPTCHA / bot wall
+        if "Enter the characters you see below" in html or "api-services-support@amazon.com" in html:
+            print(f"[affiliate] Amazon CAPTCHA hit for '{keyword}'. Try a different proxy.")
+            return []
+
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Amazon search result items have data-asin attribute
+        items = soup.select("[data-asin]")
+        for item in items:
+            asin = item.get("data-asin", "").strip()
+            if not asin or len(asin) != 10:
+                continue
+
+            # Title
+            title_el = item.select_one("h2 span") or item.select_one(".a-text-normal")
+            if not title_el:
+                continue
+            title = title_el.get_text(strip=True)[:100]
+
+            # Price
+            price_el = item.select_one(".a-price .a-offscreen") or item.select_one(".a-price-whole")
+            price = price_el.get_text(strip=True) if price_el else ""
+
+            # Image
+            img_el = item.select_one("img.s-image") or item.select_one("img[data-image-latency]")
+            image_url = img_el.get("src", "") if img_el else ""
+
+            products.append({
+                "title": title,
+                "price": price,
+                "asin": asin,
+                "image_url": image_url,
+                "affiliate_url": f"https://www.amazon.com/dp/{asin}?tag={affiliate_tag}",
+            })
+
+            if len(products) >= max_products:
+                break
+
+    except Exception as e:
+        print(f"[affiliate] Amazon scrape failed for '{keyword}': {e}")
+        return []
+
+    if products:
+        cache.set(cache_key, products, timeout=_PRODUCTS_CACHE_TTL)
+        print(f"[affiliate] Scraped {len(products)} products for '{keyword}'")
+    else:
+        print(f"[affiliate] No products found for '{keyword}'")
+
+    return products
+
+
+# =============================================================================
+# HTML builder
+# =============================================================================
+
+def build_product_block_html(products: list[dict]) -> str:
+    """
+    Build a self-contained, inline-styled <div class="amazon-prd"> product block.
+    Inline styles ensure it renders correctly on any WP theme without extra CSS.
+    """
+    if not products:
+        return ""
+
+    items_html = ""
+    for p in products:
+        img_tag = ""
+        if p.get("image_url"):
+            img_tag = (
+                f'<img src="{p["image_url"]}" alt="{p["title"]}" loading="lazy" '
+                f'style="width:100%;height:140px;object-fit:contain;margin-bottom:8px;">'
+            )
+
+        price_tag = ""
+        if p.get("price"):
+            price_tag = (
+                f'<span style="display:block;font-weight:700;color:#B12704;font-size:15px;">'
+                f'{p["price"]}</span>'
+            )
+
+        items_html += (
+            f'<a href="{p["affiliate_url"]}" target="_blank" rel="nofollow sponsored noopener" '
+            f'style="display:flex;flex-direction:column;align-items:center;text-decoration:none;'
+            f'color:#111;background:#fff;border:1px solid #ddd;border-radius:8px;padding:12px;'
+            f'flex:1;min-width:140px;max-width:200px;transition:box-shadow .2s;" '
+            f'onmouseover="this.style.boxShadow=\'0 4px 12px rgba(0,0,0,.15)\'" '
+            f'onmouseout="this.style.boxShadow=\'none\'">'
+            f'{img_tag}'
+            f'<span style="font-size:13px;text-align:center;margin-bottom:6px;line-height:1.3;">{p["title"][:80]}</span>'
+            f'{price_tag}'
+            f'<span style="margin-top:8px;font-size:12px;background:#FF9900;color:#111;'
+            f'padding:5px 10px;border-radius:4px;font-weight:600;">View on Amazon</span>'
+            f'</a>'
+        )
+
+    return (
+        f'<div class="amazon-prd" style="margin:24px 0;padding:16px;background:#f9f9f9;'
+        f'border:1px solid #e0e0e0;border-radius:10px;">'
+        f'<p style="margin:0 0 12px;font-weight:700;font-size:15px;color:#333;">🛒 Recommended Products</p>'
+        f'<div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center;">'
+        f'{items_html}'
+        f'</div>'
+        f'<p style="margin:10px 0 0;font-size:10px;color:#999;text-align:right;">'
+        f'As an Amazon Associate I earn from qualifying purchases.</p>'
+        f'</div>'
+    )
+
+
+# =============================================================================
+# Content injector
+# =============================================================================
+
+def inject_into_content(original_html: str, product_block_html: str, insert_after_paragraph: int = 1) -> str:
+    """
+    Insert `product_block_html` after the Nth </p> tag in `original_html`.
+    If there are fewer than N paragraphs, insert after the last one.
+    Returns the modified HTML string.
+    """
+    if not product_block_html:
+        return original_html
+
+    # Find position of the Nth closing </p> tag (case-insensitive)
+    pattern = re.compile(r'</p>', re.IGNORECASE)
+    matches = list(pattern.finditer(original_html))
+
+    if not matches:
+        # No paragraphs at all — prepend the block
+        return product_block_html + original_html
+
+    # Clamp to available paragraphs
+    idx = min(insert_after_paragraph, len(matches)) - 1
+    insert_pos = matches[idx].end()  # position right after the Nth </p>
+
+    return original_html[:insert_pos] + "\n" + product_block_html + "\n" + original_html[insert_pos:]
+
+
+# =============================================================================
+# WordPress helpers
+# =============================================================================
+
+def _wp_auth_headers(site, extra: dict = None) -> dict:
+    """Build auth + compression headers for WP REST API calls."""
+    from base64 import b64encode
+    credentials = b64encode(f"{site.wp_username}:{site.wp_app_password}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {credentials}",
+        "Accept-Encoding": "gzip, deflate",
+        "Content-Type": "application/json",
+    }
+    if extra:
+        headers.update(extra)
+    return headers
+
+
+def fetch_wp_posts_by_slugs(site, slugs: list[str]) -> list[dict]:
+    """
+    Fetch WP posts by slug, one at a time.
+    Direct connection — no proxy needed since this is the user's own server.
+    """
+    headers = _wp_auth_headers(site)
+    base_url = f"https://{site.domain}/wp-json/wp/v2/posts"
+    posts = []
+
+    for raw_slug in slugs:
+        slug = raw_slug.strip().lstrip("/")
+        if not slug:
+            continue
+        try:
+            resp = requests.get(
+                base_url,
+                params={"slug": slug, "_fields": "id,slug,title,content", "status": "publish"},
+                headers=headers,
+                timeout=20,  # direct — no proxy
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data:
+                    posts.append(data[0])
+                else:
+                    print(f"[affiliate] Slug not found on WP: {slug}")
+            else:
+                print(f"[affiliate] WP returned {resp.status_code} for slug '{slug}'")
+        except Exception as e:
+            print(f"[affiliate] WP fetch error for slug '{slug}': {e}")
+
+        time.sleep(0.2)
+
+    return posts
+
+
+def patch_wp_post_content(site, post_id: int, new_content: str) -> bool:
+    """
+    Update a WP post's content via REST API PATCH.
+    Direct connection — no proxy needed since this is the user's own server.
+    """
+    headers = _wp_auth_headers(site)
+    url = f"https://{site.domain}/wp-json/wp/v2/posts/{post_id}"
+    try:
+        resp = requests.patch(
+            url,
+            json={"content": new_content},
+            headers=headers,
+            timeout=30,  # direct — no proxy
+        )
+        return resp.status_code == 200
+    except Exception as e:
+        print(f"[affiliate] WP patch failed for post {post_id}: {e}")
+        return False

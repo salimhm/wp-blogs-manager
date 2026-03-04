@@ -1,0 +1,137 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}Affiliate Job #{{ job.id }} — {{ job.site.domain }}{% endblock %}
+
+{% block content %}
+<div style="display:flex;gap:1rem;align-items:center;margin-bottom:1.5rem;">
+    <a href="{% url 'dashboard:affiliate_home' %}" class="btn btn-ghost">← All Jobs</a>
+    <h2 style="margin:0;">Affiliate Job #{{ job.id }} — {{ job.site.domain }}</h2>
+    {% if job.status == 'running' %}
+    <form method="post" action="{% url 'dashboard:affiliate_cancel_job' job.id %}">
+        {% csrf_token %}
+        <button class="btn btn-danger btn-sm" onclick="return confirm('Cancel this job?')">✕ Cancel</button>
+    </form>
+    {% endif %}
+</div>
+
+<!-- Stats strip -->
+<div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:1.5rem;" id="stats-strip">
+    <div class="card" style="flex:1;min-width:100px;text-align:center;padding:1rem;">
+        <div style="font-size:2rem;font-weight:700;" id="stat-total">{{ job.total_articles }}</div>
+        <div class="text-muted">Total Posts</div>
+    </div>
+    <div class="card" style="flex:1;min-width:100px;text-align:center;padding:1rem;">
+        <div style="font-size:2rem;font-weight:700;" id="stat-processed">{{ job.processed }}</div>
+        <div class="text-muted">Processed</div>
+    </div>
+    <div class="card" style="flex:1;min-width:100px;text-align:center;padding:1rem;color:var(--success,#22c55e);">
+        <div style="font-size:2rem;font-weight:700;" id="stat-injected">{{ job.injected }}</div>
+        <div class="text-muted">Injected</div>
+    </div>
+    <div class="card" style="flex:1;min-width:100px;text-align:center;padding:1rem;">
+        <div style="font-size:2rem;font-weight:700;" id="stat-skipped">{{ job.skipped }}</div>
+        <div class="text-muted">Skipped</div>
+    </div>
+    <div class="card" style="flex:1;min-width:100px;text-align:center;padding:1rem;color:var(--danger,#ef4444);">
+        <div style="font-size:2rem;font-weight:700;" id="stat-errors">{{ job.errors }}</div>
+        <div class="text-muted">Errors</div>
+    </div>
+    <div class="card" style="flex:1;min-width:130px;text-align:center;padding:1rem;">
+        <div style="font-size:1.4rem;font-weight:700;" id="stat-status">
+            {% if job.status == 'running' %}<span class="badge badge-warning">⚡ Running</span>
+            {% elif job.status == 'completed' %}<span class="badge badge-success">✓ Done</span>
+            {% elif job.status == 'failed' %}<span class="badge badge-danger">✗ Failed</span>
+            {% else %}<span class="badge badge-secondary">○ Pending</span>{% endif %}
+        </div>
+        <div class="text-muted">Status</div>
+    </div>
+</div>
+
+<!-- Progress bar (only shown while running) -->
+{% if job.status == 'running' or job.total_articles > 0 %}
+<div class="card" style="margin-bottom:1.5rem;padding:1rem;">
+    <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+        <span id="progress-label">Progress</span>
+        <span id="progress-pct">0%</span>
+    </div>
+    <div style="background:#e5e7eb;border-radius:999px;height:10px;overflow:hidden;">
+        <div id="progress-bar" style="height:100%;background:linear-gradient(90deg,#6366f1,#8b5cf6);width:0%;transition:width .4s;border-radius:999px;"></div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Live log -->
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title" style="margin:0;">Live Log</h3>
+    </div>
+    <div class="card-body" style="padding:0;">
+        <pre id="log-output" style="margin:0;padding:1rem;background:#0f1117;color:#e2e8f0;
+            font-size:12px;line-height:1.6;height:400px;overflow-y:auto;border-radius:0 0 8px 8px;
+            white-space:pre-wrap;word-break:break-all;">{{ job.log_output|default:"Waiting for job to start..." }}</pre>
+    </div>
+</div>
+
+<script>
+(function() {
+    const isLive = "{{ job.status }}" === "running" || "{{ job.status }}" === "pending";
+    const statusUrl = "{% url 'dashboard:affiliate_job_status_api' job.id %}";
+    const logEl = document.getElementById('log-output');
+    const barEl = document.getElementById('progress-bar');
+    const pctEl = document.getElementById('progress-pct');
+
+    function updateStatus(data) {
+        document.getElementById('stat-total').textContent = data.total_articles;
+        document.getElementById('stat-processed').textContent = data.processed;
+        document.getElementById('stat-injected').textContent = data.injected;
+        document.getElementById('stat-skipped').textContent = data.skipped;
+        document.getElementById('stat-errors').textContent = data.errors;
+
+        // Log
+        if (data.log_tail && data.log_tail.length) {
+            logEl.textContent = data.log_tail.join('\n');
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        // Progress bar
+        if (data.total_articles > 0) {
+            const pct = Math.round((data.processed / data.total_articles) * 100);
+            barEl.style.width = pct + '%';
+            pctEl.textContent = pct + '%';
+        }
+
+        // Status badge
+        const statusEl = document.getElementById('stat-status');
+        const badges = {
+            running: '<span class="badge badge-warning">⚡ Running</span>',
+            completed: '<span class="badge badge-success">✓ Done</span>',
+            failed: '<span class="badge badge-danger">✗ Failed</span>',
+            pending: '<span class="badge badge-secondary">○ Pending</span>',
+        };
+        statusEl.innerHTML = badges[data.status] || data.status;
+
+        return ['completed', 'failed'].includes(data.status);
+    }
+
+    if (isLive) {
+        const poll = setInterval(function() {
+            fetch(statusUrl)
+                .then(r => r.json())
+                .then(data => {
+                    const done = updateStatus(data);
+                    if (done) clearInterval(poll);
+                })
+                .catch(console.error);
+        }, 2500);
+    } else {
+        // Not live — just scroll the log to bottom
+        logEl.scrollTop = logEl.scrollHeight;
+        if (document.getElementById('progress-bar') && {{ job.total_articles }} > 0) {
+            const pct = Math.round(({{ job.processed }} / {{ job.total_articles }}) * 100);
+            barEl.style.width = pct + '%';
+            pctEl.textContent = pct + '%';
+        }
+    }
+})();
+</script>
+{% endblock %}

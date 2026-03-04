@@ -71,6 +71,12 @@
                                 <span>Bulk Key Tester</span>
                             </a>
                         </li>
+                        <li>
+                            <a href="{% url 'dashboard:affiliate_home' %}" class="nav-link {% if 'affiliate' in request.path %}active{% endif %}">
+                                <span class="nav-icon">🛒</span>
+                                <span>Affiliate</span>
+                            </a>
+                        </li>
                     </ul>
                 </div>
             </nav>
