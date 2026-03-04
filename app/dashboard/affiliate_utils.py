@@ -31,9 +31,9 @@ _PRODUCTS_CACHE_TTL = 60 * 60 * 24       # 24 hours
 
 def extract_keywords_with_groq(title: str, content_snippet: str, api_keys: list, proxy: Optional[dict] = None) -> list[str]:
     """
-    Use a fast Groq call to extract 1-2 short Amazon search queries for the article.
-    Returns a list of keyword strings.
-    Cached in Redis by title hash to avoid redundant LLM calls.
+    Use Groq to extract 1-2 precise Amazon product search queries for the article.
+    Uses the same key rotation as article generation (call_groq_with_fallback).
+    Returns a list of 1-2 keyword strings. Cached in Redis by title hash (24h).
     """
     from django.core.cache import cache
     import hashlib
@@ -46,31 +46,51 @@ def extract_keywords_with_groq(title: str, content_snippet: str, api_keys: list,
 
     from .utils import call_groq_with_fallback
 
-    prompt = f"""You are a shopping assistant. Given this article title and opening content, output 1 to 2 short Amazon product search queries that readers of this article would be most likely to buy.
+    prompt = f"""You are an Amazon product search expert. Your job is to identify what physical products someone reading this article would most likely buy on Amazon.
 
 Article title: {title}
-Opening content: {content_snippet[:300]}
+Article preview: {content_snippet[:400]}
 
-Respond ONLY with a JSON array of strings, for example: ["air fryer basket", "pizza rolls snacks"]
-No explanation, no markdown, just the JSON array."""
+Rules:
+- Output ONLY the JSON object below, nothing else
+- The "keywords" array must contain 1 or 2 short Amazon search queries (2-5 words each)
+- Queries must be SPECIFIC product names/types a person would search on Amazon to buy
+- NEVER output question fragments, topic descriptions, or article titles as keywords
+- Think: if someone reads this article, what would they open Amazon and search for?
+
+Examples:
+- "How to cook pork tenderloin?" → {{"keywords": ["pork tenderloin roast", "meat thermometer"]}}
+- "Do hornets have natural predators?" → {{"keywords": ["hornet nest removal spray", "wasp trap outdoor"]}}
+- "Best air fryer recipes" → {{"keywords": ["air fryer basket", "air fryer cookbook"]}}
+
+Output:
+{{"keywords": [...]}}"""
 
     try:
         result, _ = call_groq_with_fallback(
             api_keys=api_keys,
             prompt=prompt,
-            max_tokens=60,
+            max_tokens=80,
             proxy=proxy,
         )
-        keywords = json.loads(result.strip())
+        parsed = json.loads(result.strip())
+        # response_format=json_object returns a dict — extract "keywords" key
+        keywords = parsed.get('keywords', parsed)
         if isinstance(keywords, list):
             keywords = [k.strip() for k in keywords if isinstance(k, str) and k.strip()][:2]
-            cache.set(cache_key, keywords, timeout=_KEYWORD_CACHE_TTL)
-            return keywords
+            if keywords:
+                cache.set(cache_key, keywords, timeout=_KEYWORD_CACHE_TTL)
+                return keywords
     except Exception as e:
-        print(f"[affiliate] Keyword extraction failed: {e}")
+        print(f"[affiliate] Keyword extraction failed for '{title[:50]}': {e}")
 
-    # Fallback: use first 3 words of title
-    fallback = [" ".join(title.split()[:4])]
+    # Fallback: strip filler words from title and use remaining topic words
+    filler = {'what', 'is', 'are', 'how', 'to', 'do', 'does', 'a', 'an', 'the',
+              'can', 'will', 'should', 'would', 'could', 'have', 'has', 'any', 'some',
+              'why', 'when', 'where', 'which', 'who', 'i', 'you', 'we', 'they', 'best'}
+    words = [w for w in re.sub(r'[^a-zA-Z0-9 ]', '', title).lower().split()
+             if w not in filler]
+    fallback = [" ".join(words[:4])] if words else [title[:40]]
     cache.set(cache_key, fallback, timeout=_KEYWORD_CACHE_TTL)
     return fallback
 
