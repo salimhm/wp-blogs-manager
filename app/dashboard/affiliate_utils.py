@@ -118,7 +118,7 @@ def scrape_amazon_products(keyword: str, affiliate_tag: str, proxy: Optional[dic
     from django.core.cache import cache
     import hashlib
 
-    cache_key = f"affiliate_products_{hashlib.md5(f'{keyword}:{max_products}'.encode()).hexdigest()}"
+    cache_key = f"affiliate_products_{hashlib.md5(f'{keyword}:{max_products}:{affiliate_tag}'.encode()).hexdigest()}"
     cached = cache.get(cache_key)
     if cached is not None:
         print(f"[affiliate] Cache hit for '{keyword}'")
