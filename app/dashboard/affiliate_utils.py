@@ -142,10 +142,10 @@ def scrape_amazon_products(keyword: str, affiliate_tag: str, proxy: Optional[dic
             headers=headers,
             proxies=proxy,
             timeout=20,
-            stream=True,  # stream so we can stop reading early
+            stream=True,
         )
 
-        # Read only first 80KB — product listings are in the first 60-80KB of the search page
+        # Read only first 80KB
         raw_bytes = b""
         for chunk in response.iter_content(chunk_size=8192):
             raw_bytes += chunk
@@ -154,32 +154,43 @@ def scrape_amazon_products(keyword: str, affiliate_tag: str, proxy: Optional[dic
 
         html = raw_bytes.decode("utf-8", errors="replace")
 
+        # ── Debug: always log status + first 600 chars of HTML ────────────
+        print(f"[affiliate][DEBUG] keyword='{keyword}' status={response.status_code} bytes={len(raw_bytes)}")
+        print(f"[affiliate][DEBUG] html_snippet={html[:600].replace(chr(10), ' ').replace(chr(13), '')}")
+
         # Detect CAPTCHA / bot wall
-        if "Enter the characters you see below" in html or "api-services-support@amazon.com" in html:
-            print(f"[affiliate] Amazon CAPTCHA hit for '{keyword}'. Try a different proxy.")
-            return []
+        captcha_signals = [
+            "Enter the characters you see below",
+            "api-services-support@amazon.com",
+            "Type the characters you see in this image",
+            "robot check",
+            "automated access",
+        ]
+        for signal in captcha_signals:
+            if signal.lower() in html.lower():
+                print(f"[affiliate] Amazon CAPTCHA/block hit for '{keyword}': found '{signal}'")
+                return []
 
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, "html.parser")
 
-        # Amazon search result items have data-asin attribute
-        items = soup.select("[data-asin]")
-        for item in items:
+        # Count elements for debug
+        all_asin_els = soup.select("[data-asin]")
+        print(f"[affiliate][DEBUG] data-asin elements found: {len(all_asin_els)}")
+
+        for item in all_asin_els:
             asin = item.get("data-asin", "").strip()
             if not asin or len(asin) != 10:
                 continue
 
-            # Title
             title_el = item.select_one("h2 span") or item.select_one(".a-text-normal")
             if not title_el:
                 continue
             title = title_el.get_text(strip=True)[:100]
 
-            # Price
             price_el = item.select_one(".a-price .a-offscreen") or item.select_one(".a-price-whole")
             price = price_el.get_text(strip=True) if price_el else ""
 
-            # Image
             img_el = item.select_one("img.s-image") or item.select_one("img[data-image-latency]")
             image_url = img_el.get("src", "") if img_el else ""
 
