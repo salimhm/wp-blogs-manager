@@ -24,6 +24,10 @@ _AMAZON_SEARCH_URL = "https://www.amazon.com/s"
 _KEYWORD_CACHE_TTL = 60 * 60 * 24        # 24 hours
 _PRODUCTS_CACHE_TTL = 60 * 60 * 24       # 24 hours
 
+# Amazon's <head> alone is ~100KB of inline JS/CSS; products are in the body.
+# Reading 400KB reliably captures search result listings.
+_AMAZON_READ_LIMIT = 400 * 1024
+
 
 # =============================================================================
 # Groq keyword extraction
@@ -145,11 +149,12 @@ def scrape_amazon_products(keyword: str, affiliate_tag: str, proxy: Optional[dic
             stream=True,
         )
 
-        # Read only first 80KB
+        # Stream response — stop once we hit the read limit OR we've collected enough products
         raw_bytes = b""
-        for chunk in response.iter_content(chunk_size=8192):
+        products = []  # We'll fill this progressively via soup once fully read
+        for chunk in response.iter_content(chunk_size=16384):
             raw_bytes += chunk
-            if len(raw_bytes) >= 80 * 1024:
+            if len(raw_bytes) >= _AMAZON_READ_LIMIT:
                 break
 
         html = raw_bytes.decode("utf-8", errors="replace")
