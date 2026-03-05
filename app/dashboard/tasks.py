@@ -570,6 +570,7 @@ def start_affiliate_job(job_id: int):
         scrape_amazon_products,
         build_product_block_html,
         inject_into_content,
+        strip_amazon_blocks,
         fetch_wp_posts_by_slugs,
         patch_wp_post_content,
     )
@@ -637,12 +638,19 @@ def start_affiliate_job(job_id: int):
 
             job.processed += 1
 
-            # 2. Skip if already injected
-            if 'class="amazon-prd"' in raw_content or "class='amazon-prd'" in raw_content:
-                job.skipped += 1
-                job.save(update_fields=['processed', 'skipped'])
-                job.append_log(f"[SKIP] '{title[:60]}' — already has amazon-prd block")
-                continue
+            # 2. Skip / strip logic
+            has_block = 'class="amazon-prd"' in raw_content or "class='amazon-prd'" in raw_content
+            if has_block:
+                if f'?tag={affiliate_tag}' in raw_content:
+                    # Same tag already injected — skip entirely
+                    job.skipped += 1
+                    job.save(update_fields=['processed', 'skipped'])
+                    job.append_log(f"[SKIP] '{title[:60]}' — already injected with current tag")
+                    continue
+                else:
+                    # Tag changed — strip old blocks and reinject
+                    raw_content = strip_amazon_blocks(raw_content)
+                    job.append_log(f"[REINJECT] '{title[:60]}' — old tag replaced, re-injecting")
 
             try:
                 # 3. Groq keyword extraction (proxied via call_groq_with_fallback)

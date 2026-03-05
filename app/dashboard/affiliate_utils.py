@@ -279,32 +279,62 @@ def build_product_block_html(products: list[dict]) -> str:
     )
 
 
-# =============================================================================
-# Content injector
-# =============================================================================
+def strip_amazon_blocks(html: str) -> str:
+    """
+    Remove all <div class="amazon-prd"> product blocks from post content.
+    Used when the affiliate tag has changed and blocks need to be replaced.
+    """
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, 'html.parser')
+    for div in soup.find_all('div', class_='amazon-prd'):
+        div.decompose()
+    body = soup.find('body')
+    return body.decode_contents() if body else soup.decode_contents()
+
 
 def inject_into_content(original_html: str, product_block_html: str, insert_after_paragraph: int = 1) -> str:
     """
-    Insert `product_block_html` after the Nth </p> tag in `original_html`.
-    If there are fewer than N paragraphs, insert after the last one.
-    Returns the modified HTML string.
+    Insert product_block_html at 3 positions:
+      1. After paragraph N  (insert_after_paragraph, default = 1st)
+      2. After the middle paragraph
+      3. Appended at the very end of the content
+
+    All positions are calculated on the original HTML so offsets are stable.
+    Inserts highest-offset first to preserve lower positions.
     """
     if not product_block_html:
         return original_html
 
-    # Find position of the Nth closing </p> tag (case-insensitive)
     pattern = re.compile(r'</p>', re.IGNORECASE)
     matches = list(pattern.finditer(original_html))
 
     if not matches:
-        # No paragraphs at all — prepend the block
-        return product_block_html + original_html
+        # No <p> tags — prepend + append
+        return product_block_html + "\n" + original_html + "\n" + product_block_html
 
-    # Clamp to available paragraphs
-    idx = min(insert_after_paragraph, len(matches)) - 1
-    insert_pos = matches[idx].end()  # position right after the Nth </p>
+    total_paras = len(matches)
 
-    return original_html[:insert_pos] + "\n" + product_block_html + "\n" + original_html[insert_pos:]
+    # Position 1: after configured paragraph (1-based, clamped)
+    idx1 = min(insert_after_paragraph, total_paras) - 1
+
+    # Position 2: after middle paragraph (at least 2 paragraphs after idx1)
+    idx2 = min(max(total_paras // 2, idx1 + 2), total_paras - 1)
+
+    # Collect unique raw character positions from the ORIGINAL string (descending)
+    raw_positions = sorted(
+        {matches[i].end() for i in {idx1, idx2}},
+        reverse=True,
+    )
+
+    # Insert blocks from the end of the string toward the beginning
+    result = original_html
+    for pos in raw_positions:
+        result = result[:pos] + "\n" + product_block_html + "\n" + result[pos:]
+
+    # Position 3: bottom of article
+    result += "\n" + product_block_html
+
+    return result
 
 
 # =============================================================================
