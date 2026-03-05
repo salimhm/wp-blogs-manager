@@ -571,7 +571,7 @@ def start_affiliate_job(job_id: int):
         build_product_block_html,
         inject_into_content,
         strip_amazon_blocks,
-        fetch_wp_posts_by_slugs,
+        fetch_wp_post_by_slug,
         patch_wp_post_content,
     )
 
@@ -622,19 +622,38 @@ def start_affiliate_job(job_id: int):
         job.append_log("[FATAL] No slugs provided in this job.")
         return "No slugs"
 
-    try:
-        # 1. Fetch WP posts for all slugs (direct — own server, no proxy)
-        job.append_log(f"Fetching {len(slugs)} posts from WP (direct)...")
-        posts = fetch_wp_posts_by_slugs(site, slugs)
-        job.total_articles = len(posts)
-        job.save(update_fields=['total_articles'])
-        job.append_log(f"Fetched {len(posts)}/{len(slugs)} posts successfully")
+    job.total_articles = len(slugs)
+    job.save(update_fields=['total_articles'])
 
-        for post in posts:
+    try:
+        job.append_log(f"Processing {len(slugs)} slugs one by one...")
+
+        for slug_idx, raw_slug in enumerate(slugs):
+
+            # ── Cancellation check every 5 articles ──────────────────────
+            if slug_idx % 5 == 0:
+                job.refresh_from_db(fields=['status'])
+                if job.status != 'running':
+                    job.append_log(f"[CANCELLED] Stopped after {slug_idx} slugs.")
+                    return "Cancelled"
+
+            slug = raw_slug.strip().lstrip("/")
+            if not slug:
+                continue
+
+            # 1. Fetch this single post from WP (direct — own server, no proxy)
+            post = fetch_wp_post_by_slug(site, slug)
+            if not post:
+                job.errors += 1
+                job.save(update_fields=['errors'])
+                job.append_log(f"[MISS] Slug not found on WP: /{slug}")
+                continue
+
             post_id = post.get('id')
             raw_content = post.get('content', {}).get('rendered', '')
             title_raw = post.get('title', {}).get('rendered', '')
             title = re.sub(r'<[^>]+>', '', title_raw).strip()
+            post_url = f"https://{site.domain}/{slug}/"
 
             job.processed += 1
 
@@ -642,18 +661,16 @@ def start_affiliate_job(job_id: int):
             has_block = 'class="amazon-prd"' in raw_content or "class='amazon-prd'" in raw_content
             if has_block:
                 if f'?tag={affiliate_tag}"' in raw_content:
-                    # Same tag already injected — skip entirely
                     job.skipped += 1
                     job.save(update_fields=['processed', 'skipped'])
                     job.append_log(f"[SKIP] '{title[:60]}' — already injected with current tag")
                     continue
                 else:
-                    # Tag changed — strip old blocks and reinject
                     raw_content = strip_amazon_blocks(raw_content)
                     job.append_log(f"[REINJECT] '{title[:60]}' — old tag replaced, re-injecting")
 
             try:
-                # 3. Groq keyword extraction (proxied via call_groq_with_fallback)
+                # 3. Groq keyword extraction (proxied)
                 content_snippet = re.sub(r'<[^>]+>', '', raw_content)[:300]
                 if api_keys:
                     keywords = extract_keywords_with_groq(title, content_snippet, api_keys, proxy=proxy_dict)
@@ -661,7 +678,7 @@ def start_affiliate_job(job_id: int):
                     keywords = [" ".join(title.split()[:4])]
                 job.append_log(f"[KW] '{title[:50]}' → {keywords}")
 
-                # 4. Amazon scrape (proxied)
+                # 4. Amazon scrape (proxied, cached per keyword+tag)
                 products = []
                 for kw in keywords:
                     products = scrape_amazon_products(kw, affiliate_tag, proxy=proxy_dict, max_products=job.max_products)
@@ -674,7 +691,7 @@ def start_affiliate_job(job_id: int):
                     job.append_log(f"[ERROR] No products for '{title[:50]}' — kw: {keywords}")
                     continue
 
-                # 5. Build + inject
+                # 5. Build + inject at 3 positions
                 block_html = build_product_block_html(products)
                 new_content = inject_into_content(raw_content, block_html, job.insert_after_paragraph)
 
@@ -683,7 +700,7 @@ def start_affiliate_job(job_id: int):
                 if success:
                     job.injected += 1
                     job.save(update_fields=['processed', 'injected'])
-                    job.append_log(f"[OK] '{title[:60]}' — {len(products)} products injected")
+                    job.append_log(f"[OK] '{title[:50]}' — {len(products)} products | {post_url}")
                 else:
                     job.errors += 1
                     job.save(update_fields=['processed', 'errors'])
@@ -695,7 +712,7 @@ def start_affiliate_job(job_id: int):
                 job.append_log(f"[ERROR] '{title[:50]}': {post_err}")
 
             import time as _time
-            _time.sleep(0.5)
+            _time.sleep(0.3)
 
         job.status = 'completed'
         job.save(update_fields=['status'])

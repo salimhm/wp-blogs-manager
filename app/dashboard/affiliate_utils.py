@@ -149,19 +149,23 @@ def scrape_amazon_products(keyword: str, affiliate_tag: str, proxy: Optional[dic
             stream=True,
         )
 
-        # Stream response — stop once we hit the read limit OR we've collected enough products
+        # Stream response — smart early-stop:
+        # Amazon's <head> is ~100KB of JS/CSS. After 150KB, start checking
+        # how many real product ASINs (B0...) we've accumulated. Stop as
+        # soon as we have 2x what we need (plenty to parse from).
         raw_bytes = b""
-        products = []  # We'll fill this progressively via soup once fully read
+        products = []
         for chunk in response.iter_content(chunk_size=16384):
             raw_bytes += chunk
+            if len(raw_bytes) > 150 * 1024:
+                # Quick text probe — no BS4 needed, B-prefix ASIN is reliable
+                asin_hits = raw_bytes.count(b'data-asin="B')
+                if asin_hits >= max_products * 2:
+                    break  # Have enough — stop reading
             if len(raw_bytes) >= _AMAZON_READ_LIMIT:
                 break
 
         html = raw_bytes.decode("utf-8", errors="replace")
-
-        # ── Debug: always log status + first 600 chars of HTML ────────────
-        print(f"[affiliate][DEBUG] keyword='{keyword}' status={response.status_code} bytes={len(raw_bytes)}")
-        print(f"[affiliate][DEBUG] html_snippet={html[:600].replace(chr(10), ' ').replace(chr(13), '')}")
 
         # Detect CAPTCHA / bot wall
         captcha_signals = [
@@ -389,6 +393,28 @@ def fetch_wp_posts_by_slugs(site, slugs: list[str]) -> list[dict]:
         time.sleep(0.2)
 
     return posts
+
+
+def fetch_wp_post_by_slug(site, slug: str) -> Optional[dict]:
+    """
+    Fetch a single WP post by slug. Returns the post dict or None.
+    Direct connection — no proxy needed since this is the user's own server.
+    """
+    headers = _wp_auth_headers(site)
+    base_url = f"https://{site.domain}/wp-json/wp/v2/posts"
+    try:
+        resp = requests.get(
+            base_url,
+            params={"slug": slug, "_fields": "id,slug,title,content", "status": "publish"},
+            headers=headers,
+            timeout=20,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return data[0] if data else None
+    except Exception as e:
+        print(f"[affiliate] WP fetch error for slug '{slug}': {e}")
+    return None
 
 
 def patch_wp_post_content(site, post_id: int, new_content: str) -> bool:
