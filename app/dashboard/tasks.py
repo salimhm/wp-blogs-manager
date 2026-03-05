@@ -641,7 +641,7 @@ def start_affiliate_job(job_id: int):
             # 2. Skip / strip logic
             has_block = 'class="amazon-prd"' in raw_content or "class='amazon-prd'" in raw_content
             if has_block:
-                if f'?tag={affiliate_tag}' in raw_content:
+                if f'?tag={affiliate_tag}"' in raw_content:
                     # Same tag already injected — skip entirely
                     job.skipped += 1
                     job.save(update_fields=['processed', 'skipped'])
