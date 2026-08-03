@@ -1552,38 +1552,54 @@ def daily_run_status(request, site_domain, run_id):
 
 @require_http_methods(["POST"])
 def pause_daily_run(request, site_domain, run_id):
-    """Pause a daily run (can be resumed later)."""
+    """Stop a run's Celery work while preserving its resumable database state."""
     site = get_object_or_404(Site, domain=site_domain)
     run = get_object_or_404(DailyRun, run_number=run_id, site=site)
-    
+
     if run.status == 'running':
+        # Change the run state first so tasks that race with the revoke request
+        # see "paused" and exit without starting new work.
         DailyRun.objects.filter(id=run.id).update(status='paused')
-        
-        # Revoke currently queued & generating tasks to stop immediately
+
         from app.celery import app as celery_app
         from .models import Article
-        
-        active_articles = Article.objects.filter(
-            daily_run=run,
-            status__in=['generating', 'pending']
-        ).exclude(task_id='')
-        
-        killed_count = 0
-        for article in active_articles:
+
+        task_ids = list(
+            Article.objects
+            .filter(daily_run=run, status__in=['generating', 'pending'])
+            .exclude(task_id='')
+            .values_list('task_id', flat=True)
+        )
+
+        revoked_count = len(task_ids)
+        if task_ids:
             try:
-                # Terminate running worker
-                celery_app.control.revoke(article.task_id, terminate=True, signal='SIGTERM')
-                # Revert article to pending so it can be resumed later cleanly
-                if article.status == 'generating':
-                    article.status = 'pending'
-                    article.save(update_fields=['status'])
-                killed_count += 1
+                celery_app.control.revoke(task_ids, terminate=True, signal='SIGTERM')
             except Exception as e:
-                print(f"Failed to kill task {article.task_id}: {e}")
-                
-        print(f"[PAUSE] Daily run {run.id} for site {site.domain} paused by user. Terminated {killed_count} active/queued workers.")
-        messages.info(request, f'Daily run paused. {killed_count} active/queued task(s) forcibly stopped. New articles will not start. You can resume anytime.')
-    
+                revoked_count = 0
+                print(f"Failed to revoke tasks for run {run.id}: {e}")
+
+        # A killed in-flight article must become pending again. Its site,
+        # DailyRun, KeywordList and keyword_index remain unchanged, which is
+        # the checkpoint process_daily_run uses when this run is resumed.
+        Article.objects.filter(
+            daily_run=run,
+            status='generating',
+        ).update(status='pending', error_message='')
+
+        preserved_count = Article.objects.filter(
+            daily_run=run,
+            status__in=['ready', 'published'],
+        ).count()
+        print(f"[PAUSE] Daily run {run.id} for {site.domain} paused. Revoked {revoked_count} tasks; preserved {preserved_count} completed articles.")
+        messages.info(
+            request,
+            f'Run paused. {revoked_count} queued/active task(s) stopped and '
+            f'{preserved_count} completed article(s) preserved. You can resume anytime.'
+        )
+
+    if request.POST.get('return_to') == 'dashboard':
+        return redirect('dashboard:home')
     return redirect('dashboard:daily_run_status', site_domain=site_domain, run_id=run.run_number)
 
 

@@ -1,5 +1,6 @@
 import datetime
 from celery import shared_task
+from django.db.models import Q
 from django.utils import timezone
 from .models import DailyRun, Article, APIKey, ProxySettings, Site, SiteLog, KeywordList
 from .utils import generate_article_content, publish_to_wordpress
@@ -82,11 +83,15 @@ def process_daily_run(run_id):
     # Schedule tasks
     scheduled_count = 0
     
-    # 1. First, re-schedule any existing pending tasks for this site that were paused
-    pending_articles = Article.objects.filter(
-        site=run.site,
-        status='pending'
-    ).order_by('id')
+    # 1. Re-schedule this run's paused work, plus any legacy pending articles
+    # that have never been assigned to a run. Never steal pending articles from
+    # another run for the same site.
+    pending_articles = (
+        Article.objects
+        .filter(site=run.site, status='pending')
+        .filter(Q(daily_run=run) | Q(daily_run__isnull=True))
+        .order_by('id')
+    )
     
     for p_article in pending_articles:
         if scheduled_count >= needed:

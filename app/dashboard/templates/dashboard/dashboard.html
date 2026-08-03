@@ -98,11 +98,23 @@
     <div class="card-body" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">
         {% for item in running_runs %}
         <div style="background: rgba(255,255,255,0.04); border-radius: 12px; padding: 16px; border: 1px solid rgba(74, 222, 128, 0.15);">
-            <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
                 <span style="font-weight: 600;">{{ item.run.site.domain }}</span>
-                <a href="{% url 'dashboard:daily_run_status' item.run.site.domain item.run.run_number %}" class="btn btn-sm btn-ghost">View →</a>
+                <div style="display: flex; align-items: center; gap: 6px; margin-left: auto;">
+                    <a href="{% url 'dashboard:daily_run_status' item.run.site.domain item.run.run_number %}" class="btn btn-sm btn-ghost">View →</a>
+                    <form method="post" action="{% url 'dashboard:pause_daily_run' item.run.site.domain item.run.run_number %}" style="margin: 0;">
+                        {% csrf_token %}
+                        <input type="hidden" name="return_to" value="dashboard">
+                        <button type="submit" class="btn btn-sm btn-warning"
+                                title="Stop queued and active work while keeping article and keyword progress"
+                                onclick="return confirm('Stop this run now? Completed articles and keyword progress will be kept so it can be resumed later.');">
+                            ⏸ Stop & Keep
+                        </button>
+                    </form>
+                </div>
             </div>
             <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">
+                Run #{{ item.run.run_number }} &middot; {{ item.run.keyword_list.name|default:"All keyword lists" }}<br>
                 {{ item.live_count }} / {{ item.run.target_count }} articles &middot; Started {{ item.run.started_at|date:"H:i" }} UTC
             </div>
             <div style="background: rgba(255,255,255,0.1); border-radius: 100px; height: 8px; overflow: hidden;">

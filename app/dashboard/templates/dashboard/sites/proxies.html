@@ -78,7 +78,10 @@
                         <span id="proxy-test-result-{{ proxy.id }}" class="proxy-test-result"></span>
                     </td>
                     <td>
-                        <button type="button" class="btn btn-sm btn-secondary" data-site-id="{{ site.id }}" data-proxy-id="{{ proxy.id }}" onclick="testExistingProxy(this.dataset.siteId, this.dataset.proxyId)">
+                        <button type="button" class="btn btn-sm btn-secondary"
+                                data-test-url="{% url 'dashboard:test_proxy' site.domain proxy.id %}"
+                                data-proxy-id="{{ proxy.id }}"
+                                onclick="testExistingProxy(this.dataset.testUrl, this.dataset.proxyId)">
                             Test
                         </button>
                         <form method="post" action="{% url 'dashboard:delete_proxy' site.domain proxy.id %}" style="display:inline;">
@@ -104,7 +107,6 @@
 {% block extra_js %}
 <script>
 const csrfToken = '{{ csrf_token }}';
-const siteId = '{{ site.id }}';
 
 // Helper function for fetch with timeout
 async function fetchWithTimeout(url, options, timeoutMs = 30000) {
@@ -271,13 +273,13 @@ async function testAndAddProxy() {
     }
 }
 
-async function testExistingProxy(proxySiteId, proxyId) {
+async function testExistingProxy(testUrl, proxyId) {
     const resultSpan = document.getElementById('proxy-test-result-' + proxyId);
     
     resultSpan.innerHTML = '<span class="badge badge-warning">Testing...</span>';
     
     try {
-        const response = await fetchWithTimeout('/sites/' + proxySiteId + '/proxies/' + proxyId + '/test/', {
+        const response = await fetchWithTimeout(testUrl, {
             method: 'POST',
             headers: {
                 'X-CSRFToken': csrfToken
