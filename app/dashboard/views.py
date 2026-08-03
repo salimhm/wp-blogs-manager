@@ -543,9 +543,11 @@ def stream_key_test(request):
             if isinstance(item, dict):
                 key = item.get('key', '').strip()
                 created_at = item.get('created_at', 'N/A')
+                key_id = item.get('key_id')
             else:
                 key = str(item).strip()
                 created_at = 'N/A'
+                key_id = None
                 
             if not key:
                 continue
@@ -557,6 +559,7 @@ def stream_key_test(request):
             response_text = ""
             status_str = "Error"
             attempts = 0
+            restricted = False
             
             for attempt in range(1, 6):
                 attempts = attempt
@@ -581,13 +584,16 @@ def stream_key_test(request):
                             error_msg = res.json().get('error', {}).get('message', res.text[:50])
                         except:
                             error_msg = res.text[:50]
+                        restricted = 'restricted' in error_msg.lower()
+                        if restricted:
+                            status_str = "Restricted"
                         response_text = f"{res.status_code} - {error_msg}"
                         break
                 except Exception as e:
                     response_text = f"Connection error: {str(e)[:40]}"
                     time.sleep(2)
             
-            yield f"data: {json.dumps({'type': 'result', 'key': masked_key, 'created_at': created_at, 'status': status_str, 'response': response_text, 'attempts': attempts})}\n\n"
+            yield f"data: {json.dumps({'type': 'result', 'key': masked_key, 'key_id': key_id, 'created_at': created_at, 'status': status_str, 'restricted': restricted, 'response': response_text, 'attempts': attempts})}\n\n"
             
             # Tiny sleep to avoid completely saturating local network instantly
             time.sleep(0.1)
@@ -598,6 +604,24 @@ def stream_key_test(request):
     response['Cache-Control'] = 'no-cache'
     response['X-Accel-Buffering'] = 'no'
     return response
+
+
+@require_http_methods(["POST"])
+def delete_restricted_api_keys(request):
+    """Delete the exact database keys classified as restricted by the tester."""
+    try:
+        data = json.loads(request.body)
+        key_ids = {int(key_id) for key_id in data.get('key_ids', [])}
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        return JsonResponse({'error': f'Invalid key list: {exc}'}, status=400)
+
+    if not key_ids:
+        return JsonResponse({'deleted': 0})
+
+    keys = APIKey.objects.filter(provider='groq', id__in=key_ids)
+    deleted_count = keys.count()
+    keys.delete()
+    return JsonResponse({'deleted': deleted_count})
 
 
 def proxy_list(request):
@@ -1657,6 +1681,88 @@ def pause_all_daily_runs(request):
     return redirect('dashboard:home')
 
 
+def _cancel_run_ids(run_ids):
+    """Permanently cancel runs and discard only unfinished article checkpoints."""
+    from app.celery import app as celery_app
+    from .models import Article
+
+    run_ids = list(run_ids)
+    if not run_ids:
+        return {'runs': 0, 'revoked_tasks': 0, 'active_tasks': 0, 'deleted_articles': 0}
+
+    # Flip the stop signal first so tasks that wake during cancellation exit.
+    cancelled_count = DailyRun.objects.filter(
+        id__in=run_ids,
+        status__in=['running', 'paused'],
+    ).update(status='cancelled')
+
+    unfinished_tasks = list(
+        Article.objects
+        .filter(daily_run_id__in=run_ids, status__in=['pending', 'generating'])
+        .exclude(task_id='')
+        .exclude(task_id='paused')
+        .values_list('task_id', 'status')
+    )
+    task_ids = list({task_id for task_id, _status in unfinished_tasks})
+    active_task_ids = [
+        task_id for task_id, status in unfinished_tasks
+        if status == 'generating'
+    ]
+
+    revoked_count = len(task_ids)
+    if task_ids:
+        try:
+            # One broadcast replaces the old per-task revoke loop.
+            celery_app.control.revoke(task_ids)
+        except Exception as exc:
+            revoked_count = 0
+            print(f"Failed to revoke tasks for cancelled runs {run_ids}: {exc}")
+
+    terminated_count = len(active_task_ids)
+    if active_task_ids:
+        try:
+            celery_app.control.revoke(active_task_ids, terminate=True, signal='SIGTERM')
+        except Exception as exc:
+            terminated_count = 0
+            print(f"Failed to terminate active tasks for cancelled runs {run_ids}: {exc}")
+
+    # Ready/published work is deliberately preserved. Removing pending and
+    # generating rows releases their keyword indices for a brand-new run.
+    unfinished_articles = Article.objects.filter(
+        daily_run_id__in=run_ids,
+        status__in=['pending', 'generating'],
+    )
+    deleted_articles = unfinished_articles.count()
+    unfinished_articles.delete()
+
+    return {
+        'runs': cancelled_count,
+        'revoked_tasks': revoked_count,
+        'active_tasks': terminated_count,
+        'deleted_articles': deleted_articles,
+    }
+
+
+@require_http_methods(["POST"])
+def cancel_all_daily_runs(request):
+    """Permanently cancel every running or paused run in one bounded operation."""
+    run_ids = list(
+        DailyRun.objects
+        .filter(status__in=['running', 'paused'])
+        .values_list('id', flat=True)
+    )
+    result = _cancel_run_ids(run_ids)
+    messages.warning(
+        request,
+        f"Permanently cancelled {result['runs']} run(s), revoked "
+        f"{result['revoked_tasks']} queued task(s), terminated "
+        f"{result['active_tasks']} active task(s), and removed "
+        f"{result['deleted_articles']} unfinished article checkpoint(s). "
+        "Ready and published articles were preserved."
+    )
+    return redirect('dashboard:home')
+
+
 @require_http_methods(["POST"])
 def resume_daily_run(request, site_domain, run_id):
     """Resume a paused daily run."""
@@ -1686,34 +1792,18 @@ def resume_daily_run(request, site_domain, run_id):
 
 @require_http_methods(["POST"])
 def cancel_daily_run(request, site_domain, run_id):
-    """Cancel a daily run and FORCE KILL active tasks."""
+    """Permanently cancel one run and discard its unfinished checkpoints."""
     site = get_object_or_404(Site, domain=site_domain)
     run = get_object_or_404(DailyRun, run_number=run_id, site=site)
     
     if run.status in ['running', 'paused']:
-        DailyRun.objects.filter(id=run.id).update(status='cancelled')
-        
-        # Force Kill: Find all articles currently generating for this run
-        from .models import Article
-        from app.celery import app as celery_app
-        
-        active_articles = Article.objects.filter(
-            daily_run=run,
-            status='generating'
-        ).exclude(task_id='')
-        
-        killed_count = 0
-        for article in active_articles:
-            try:
-                celery_app.control.revoke(article.task_id, terminate=True)
-                article.status = 'failed'
-                article.error_message = 'Cancelled by user'
-                article.save(update_fields=['status', 'error_message'])
-                killed_count += 1
-            except Exception as e:
-                print(f"Failed to kill task {article.task_id}: {e}")
-                
-        messages.warning(request, f'Daily run cancelled. {killed_count} active tasks were terminated.')
+        result = _cancel_run_ids([run.id])
+        messages.warning(
+            request,
+            f"Run permanently cancelled. {result['revoked_tasks']} queued task(s) revoked, "
+            f"{result['active_tasks']} active task(s) "
+            f"terminated and {result['deleted_articles']} unfinished checkpoint(s) removed."
+        )
     
     return redirect('dashboard:daily_run_status', site_domain=site_domain, run_id=run.run_number)
 

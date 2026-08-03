@@ -16,14 +16,14 @@
             <div class="card-body">
                 <div class="alert alert-info">
                     <i class="bi bi-info-circle me-1"></i>
-                    <strong>{{ api_keys|length }}</strong> existing Groq keys loaded from the database.
+                    <strong id="databaseKeyCount">{{ api_keys|length }}</strong> existing Groq keys loaded from the database.
                 </div>
                 
                 <form id="testerForm">
                     <!-- Invisible store for DB keys -->
                     <div id="dbKeys" style="display:none;">
                         {% for key in api_keys %}
-                            <input type="hidden" class="db-key-value" value="{{ key.api_key }}" data-created="{{ key.created_at|date:'M j, Y g:i A' }}">
+                            <input type="hidden" class="db-key-value" value="{{ key.api_key }}" data-key-id="{{ key.id }}" data-created="{{ key.created_at|date:'M j, Y g:i A' }}">
                         {% endfor %}
                     </div>
 
@@ -67,7 +67,12 @@
         <div class="card shadow-sm mb-4">
             <div class="card-header bg-white d-flex justify-content-between align-items-center">
                 <h5 class="mb-0">Real-Time Results</h5>
-                <span class="badge bg-secondary" id="progressBadge">0 / 0</span>
+                <div class="d-flex align-items-center gap-2">
+                    <button type="button" class="btn btn-sm btn-danger d-none" id="removeRestrictedBtn">
+                        <i class="bi bi-trash me-1"></i> Remove Restricted (0)
+                    </button>
+                    <span class="badge bg-secondary" id="progressBadge">0 / 0</span>
+                </div>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive" style="max-height: 600px; overflow-y: auto;">
@@ -106,41 +111,42 @@ document.addEventListener('DOMContentLoaded', function() {
     const progressBadge = document.getElementById('progressBadge');
     const statsCard = document.getElementById('statsCard');
     const successCounter = document.getElementById('successCounter');
+    const removeRestrictedBtn = document.getElementById('removeRestrictedBtn');
+    const databaseKeyCount = document.getElementById('databaseKeyCount');
     
     let isTesting = false;
-    let eventSource = null;
     let totalKeys = 0;
     let testedKeys = 0;
     let successKeys = 0;
-    let keyDates = {};
+    let restrictedKeyIds = new Set();
 
     testerForm.addEventListener('submit', async function(e) {
         e.preventDefault();
         
         // 1. Collect all keys
-        let allKeys = [];
+        let allKeys = new Map();
         document.querySelectorAll('.db-key-value').forEach(el => {
             let val = el.value.trim();
             if (val) {
-                allKeys.push(val);
-                keyDates[val] = el.getAttribute('data-created') || 'Unknown';
+                allKeys.set(val, {
+                    key: val,
+                    key_id: Number(el.dataset.keyId),
+                    created_at: el.dataset.created || 'Unknown'
+                });
             }
         });
         
         let extraText = extraKeysInput.value;
         if (extraText) {
-            let extraArr = extraText.split(/[\n,]+/);
-            extraArr.forEach(k => {
+            extraText.split(/[\n,]+/).forEach(k => {
                 let clean = k.trim();
-                if (clean) {
-                    allKeys.push(clean);
-                    if (!keyDates[clean]) keyDates[clean] = 'N/A';
+                if (clean && !allKeys.has(clean)) {
+                    allKeys.set(clean, {key: clean, key_id: null, created_at: 'N/A'});
                 }
             });
         }
         
-        // Deduplicate
-        allKeys = [...new Set(allKeys)];
+        allKeys = [...allKeys.values()];
         
         if (allKeys.length === 0) {
             alert('No API keys found in the database and none provided in the text area!');
@@ -152,6 +158,8 @@ document.addEventListener('DOMContentLoaded', function() {
         totalKeys = allKeys.length;
         testedKeys = 0;
         successKeys = 0;
+        restrictedKeyIds.clear();
+        updateRestrictedButton();
         
         startBtn.classList.add('d-none');
         stopBtn.classList.remove('d-none');
@@ -173,7 +181,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     'X-CSRFToken': csrfToken
                 },
                 body: JSON.stringify({
-                    keys: allKeys.map(k => ({ key: k, created_at: keyDates[k] })),
+                    keys: allKeys,
                     proxy_id: proxySelect.value
                 })
             });
@@ -188,6 +196,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const decoder = new TextDecoder('utf-8');
             
             async function readStream() {
+                let streamBuffer = '';
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
@@ -197,8 +206,10 @@ document.addEventListener('DOMContentLoaded', function() {
                         break;
                     }
                     
-                    const chunk = decoder.decode(value, { stream: true });
-                    const lines = chunk.split('\n\n');
+                    streamBuffer += decoder.decode(value, { stream: true });
+                    const lines = streamBuffer.split('\n\n');
+                    // Keep a partial SSE event for the next network chunk.
+                    streamBuffer = lines.pop();
                     
                     for (const line of lines) {
                         if (line.startsWith('data: ')) {
@@ -217,20 +228,26 @@ document.addEventListener('DOMContentLoaded', function() {
                                     if (payload.status === 'Valid') {
                                         successKeys++;
                                     }
+                                    if (payload.restricted && payload.key_id) {
+                                        restrictedKeyIds.add(Number(payload.key_id));
+                                        updateRestrictedButton();
+                                    }
                                     successCounter.textContent = `${successKeys} / ${totalKeys}`;
                                     
                                     // Build row
                                     const tr = document.createElement('tr');
+                                    if (payload.key_id) tr.dataset.keyId = payload.key_id;
                                     let badgeClass = 'bg-secondary';
                                     if (payload.status === 'Valid') badgeClass = 'bg-success';
                                     if (payload.status === 'Invalid') badgeClass = 'bg-danger';
+                                    if (payload.status === 'Restricted') badgeClass = 'bg-danger';
                                     if (payload.status === 'Error') badgeClass = 'bg-warning text-dark';
                                     
                                     tr.innerHTML = `
-                                        <td class="text-nowrap text-muted"><small>${payload.created_at}</small></td>
-                                        <td><code>${payload.key}</code></td>
-                                        <td><span class="badge ${badgeClass}">${payload.status}</span></td>
-                                        <td><small class="text-muted">${payload.response}</small></td>
+                                        <td class="text-nowrap text-muted"><small>${escapeHtml(payload.created_at)}</small></td>
+                                        <td><code>${escapeHtml(payload.key)}</code></td>
+                                        <td><span class="badge ${badgeClass}">${escapeHtml(payload.status)}</span></td>
+                                        <td><small class="text-muted">${escapeHtml(payload.response)}</small></td>
                                         <td>${payload.attempts > 1 ? '<span class="badge bg-warning text-dark">' + payload.attempts + '</span>' : payload.attempts}</td>
                                     `;
                                     // Append so older stuff stays at top, or prepend for reverse chronological
@@ -264,10 +281,60 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
     
+    function escapeHtml(value) {
+        const element = document.createElement('div');
+        element.textContent = String(value ?? '');
+        return element.innerHTML;
+    }
+
+    function updateRestrictedButton() {
+        const count = restrictedKeyIds.size;
+        removeRestrictedBtn.innerHTML = `<i class="bi bi-trash me-1"></i> Remove Restricted (${count})`;
+        removeRestrictedBtn.classList.toggle('d-none', count === 0);
+        removeRestrictedBtn.disabled = count === 0 || isTesting;
+    }
+
+    removeRestrictedBtn.addEventListener('click', async function() {
+        const keyIds = [...restrictedKeyIds];
+        if (!keyIds.length) return;
+        if (!confirm(`Permanently delete ${keyIds.length} restricted Groq API key(s) from the database? This cannot be undone.`)) {
+            return;
+        }
+
+        removeRestrictedBtn.disabled = true;
+        try {
+            const response = await fetch('{% url "dashboard:delete_restricted_api_keys" %}', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': '{{ csrf_token }}'
+                },
+                body: JSON.stringify({key_ids: keyIds})
+            });
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result.error || 'Deletion failed');
+            }
+
+            keyIds.forEach(keyId => {
+                document.querySelectorAll(`.db-key-value[data-key-id="${keyId}"]`).forEach(el => el.remove());
+                document.querySelectorAll(`#resultsTableBody tr[data-key-id="${keyId}"]`).forEach(el => el.remove());
+            });
+            restrictedKeyIds.clear();
+            databaseKeyCount.textContent = document.querySelectorAll('.db-key-value').length;
+            updateRestrictedButton();
+            alert(`Deleted ${result.deleted} restricted Groq API key(s).`);
+        } catch (error) {
+            alert(`Could not delete restricted keys: ${error.message}`);
+            updateRestrictedButton();
+        }
+    });
+
     function finishTest(finalStatusStr) {
         startBtn.classList.remove('d-none');
         stopBtn.classList.add('d-none');
         isTesting = false;
+        updateRestrictedButton();
         
         if (finalStatusStr === 'Completed') {
             progressBadge.className = 'badge bg-success';

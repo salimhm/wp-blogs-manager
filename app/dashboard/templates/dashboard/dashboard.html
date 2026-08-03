@@ -102,6 +102,13 @@
                     ⏸ Stop All & Keep
                 </button>
             </form>
+            <form method="post" action="{% url 'dashboard:cancel_all_daily_runs' %}" style="margin: 0;">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-danger"
+                        onclick="return confirm('Permanently kill every running and paused run? Unfinished article checkpoints will be deleted. Ready and published articles will be kept. This cannot be undone.');">
+                    ⛔ Kill All Permanently
+                </button>
+            </form>
         </div>
     </div>
     <div class="card-body" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">
@@ -146,7 +153,16 @@
             <span style="display: inline-block; width: 10px; height: 10px; background: var(--warning); border-radius: 50%; margin-right: 8px;"></span>
             Paused Runs
         </h2>
-        <span class="badge badge-warning">{{ paused_runs|length }} Paused</span>
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <span class="badge badge-warning">{{ paused_runs|length }} Paused</span>
+            <form method="post" action="{% url 'dashboard:cancel_all_daily_runs' %}" style="margin: 0;">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-danger"
+                        onclick="return confirm('Permanently kill every running and paused run? Unfinished article checkpoints will be deleted. Ready and published articles will be kept. This cannot be undone.');">
+                    ⛔ Kill All Permanently
+                </button>
+            </form>
+        </div>
     </div>
     <div class="card-body" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">
         {% for item in paused_runs %}

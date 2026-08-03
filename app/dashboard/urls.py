@@ -28,6 +28,7 @@ urlpatterns = [
     path('proxies/', views.proxy_list, name='proxy_list'),
     path('proxies/bulk-tester/', views.bulk_key_tester, name='bulk_key_tester'),
     path('proxies/bulk-tester/stream/', views.stream_key_test, name='stream_key_test'),
+    path('proxies/bulk-tester/delete-restricted/', views.delete_restricted_api_keys, name='delete_restricted_api_keys'),
     path('sites/<str:site_domain>/proxies/', views.manage_proxies, name='manage_proxies'),
     path('sites/<str:site_domain>/proxies/<int:proxy_id>/delete/', views.delete_proxy, name='delete_proxy'),
     path('sites/<str:site_domain>/proxies/<int:proxy_id>/test/', views.test_proxy, name='test_proxy'),
@@ -45,6 +46,7 @@ urlpatterns = [
     
     # Daily Runs
     path('daily-runs/pause-all/', views.pause_all_daily_runs, name='pause_all_daily_runs'),
+    path('daily-runs/cancel-all/', views.cancel_all_daily_runs, name='cancel_all_daily_runs'),
     path('sites/<str:site_domain>/daily-run/start/', views.start_daily_run, name='start_daily_run'),
     path('sites/<str:site_domain>/daily-run/history/', views.daily_run_history, name='daily_run_history'),
     path('sites/<str:site_domain>/daily-run/<int:run_id>/', views.daily_run_status, name='daily_run_status'),

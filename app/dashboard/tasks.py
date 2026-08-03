@@ -258,6 +258,19 @@ def generate_single_article(self, article_id, run_id=None):
         # 3. Generate Content with cross-provider fallback
         content_data = generate_article_content(h2s, api_keys, proxy_dict)
         
+        # The API call above can outlive a cancellation request. Re-check the
+        # durable stop signal before saving or publishing its result.
+        if run:
+            current_run_status = (
+                DailyRun.objects
+                .filter(id=run.id)
+                .values_list('status', flat=True)
+                .first()
+            )
+            if current_run_status != 'running':
+                print(f"[SKIP] Run {current_run_status}; discarding generated result for article {article_id}.")
+                return f"Run {current_run_status}"
+
         # 4. Update Article Record
         article.title = content_data['title']
         article.introduction = content_data['introduction']
@@ -297,6 +310,18 @@ def generate_single_article(self, article_id, run_id=None):
         except Exception as log_error:
             print(f"Failed to create success log: {log_error}")
         
+        # Cancellation can happen after content was saved but before the
+        # WordPress request. Keep the completed draft, but never publish it.
+        if run:
+            current_run_status = (
+                DailyRun.objects
+                .filter(id=run.id)
+                .values_list('status', flat=True)
+                .first()
+            )
+            if current_run_status != 'running':
+                return f"Run {current_run_status}"
+
         # 5. Publish to WordPress
         if site.is_verified:
             # We need to decrypt password? Assuming verify_wp_credentials logic handles it.
@@ -346,6 +371,10 @@ def generate_single_article(self, article_id, run_id=None):
         import traceback
         error_trace = traceback.format_exc()
 
+        if article is None:
+            print(f"[SKIP] Article {article_id} no longer exists: {e}")
+            return "Article no longer exists"
+
         # A termination requested by Pause must not race the checkpoint update
         # and turn resumable work into a failure.
         if run:
@@ -355,6 +384,9 @@ def generate_single_article(self, article_id, run_id=None):
                 .values_list('status', flat=True)
                 .first()
             )
+            if current_run_status == 'cancelled':
+                print(f"[CANCEL] Article {article_id} stopped without recreating its checkpoint.")
+                return "Run cancelled"
             if current_run_status == 'paused':
                 Article.objects.filter(id=article_id).update(status='pending', error_message='')
                 print(f"[PAUSE] Article {article_id} checkpointed after task termination.")
