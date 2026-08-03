@@ -1,6 +1,6 @@
 import datetime
+from uuid import uuid4
 from celery import shared_task
-from celery.utils.uuid import uuid
 from django.db.models import Q
 from django.utils import timezone
 from .models import DailyRun, Article, APIKey, ProxySettings, Site, SiteLog, KeywordList
@@ -99,7 +99,7 @@ def process_daily_run(run_id):
             break
         
         eta = start_dt + datetime.timedelta(seconds=scheduled_count * interval_seconds)
-        task_id = uuid()
+        task_id = str(uuid4())
         p_article.task_id = task_id
         p_article.daily_run = run
         p_article.save(update_fields=['daily_run', 'task_id'])
@@ -148,7 +148,7 @@ def process_daily_run(run_id):
             # Schedule execution
             eta = start_dt + datetime.timedelta(seconds=scheduled_count * interval_seconds)
 
-            task_id = uuid()
+            task_id = str(uuid4())
             article.task_id = task_id
             article.save(update_fields=['task_id'])
             generate_single_article.apply_async(
