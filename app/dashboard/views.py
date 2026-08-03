@@ -88,23 +88,37 @@ def dashboard_home(request):
     total_published = Article.objects.filter(status='published').count()
     active_keys = APIKey.objects.filter(is_active=True, provider='groq').count()
 
-    # ── Running runs (2 queries) ─────────────────────────────────────────────
+    # ── Running and resumable runs ───────────────────────────────────────────
     running_runs_qs = list(DailyRun.objects.filter(status='running').select_related('site', 'keyword_list'))
-    running_run_ids = [r.id for r in running_runs_qs]
+    # Keep the paused section bounded so years of history cannot make the
+    # dashboard heavy again.
+    paused_runs_qs = list(
+        DailyRun.objects
+        .filter(status='paused')
+        .select_related('site', 'keyword_list')
+        .order_by('-started_at')[:100]
+    )
+    visible_run_ids = [r.id for r in running_runs_qs] + [r.id for r in paused_runs_qs]
     live_counts_map = (
         {
             row['daily_run_id']: row['cnt']
             for row in Article.objects
-                .filter(daily_run_id__in=running_run_ids, status__in=['ready', 'published'])
+                .filter(daily_run_id__in=visible_run_ids, status__in=['ready', 'published'])
                 .values('daily_run_id').annotate(cnt=Count('id'))
         }
-        if running_run_ids else {}
+        if visible_run_ids else {}
     )
-    running_runs = []
-    for run in running_runs_qs:
-        live_count = live_counts_map.get(run.id, 0)
-        progress = round((live_count / run.target_count) * 100, 1) if run.target_count > 0 else 0
-        running_runs.append({'run': run, 'live_count': live_count, 'progress': progress})
+
+    def build_run_cards(runs):
+        cards = []
+        for run in runs:
+            live_count = live_counts_map.get(run.id, 0)
+            progress = round((live_count / run.target_count) * 100, 1) if run.target_count > 0 else 0
+            cards.append({'run': run, 'live_count': live_count, 'progress': progress})
+        return cards
+
+    running_runs = build_run_cards(running_runs_qs)
+    paused_runs = build_run_cards(paused_runs_qs)
 
     # ── Sparklines: 1 grouped query replaces 112 individual ones ────────────
     sparkline_map = {}  # { site_id: { date_obj: count } }
@@ -211,6 +225,7 @@ def dashboard_home(request):
         'articles_today': articles_today,
         'articles_week': articles_week,
         'total_published': total_published,
+        'paused_runs': paused_runs,
         'active_keys': active_keys,
     }
     return render(request, 'dashboard/dashboard.html', context)
@@ -1550,52 +1565,74 @@ def daily_run_status(request, site_domain, run_id):
     })
 
 
+def _pause_run_ids(run_ids):
+    """Pause runs with constant-memory DB updates and only kill active work."""
+    from app.celery import app as celery_app
+    from .models import Article
+
+    run_ids = list(run_ids)
+    if not run_ids:
+        return {'runs': 0, 'active_tasks': 0, 'checkpointed': 0}
+
+    # Status is the primary stop signal. Future ETA tasks consult this before
+    # generating, so broadcasting every pending task ID is unnecessary.
+    paused_count = DailyRun.objects.filter(
+        id__in=run_ids,
+        status='running',
+    ).update(status='paused')
+
+    active_task_ids = list(
+        Article.objects
+        .filter(daily_run_id__in=run_ids, status='generating')
+        .exclude(task_id='')
+        .values_list('task_id', flat=True)
+    )
+
+    # Checkpoint only in-flight rows. Pending rows already retain their run,
+    # keyword list and keyword_index and require no write during a pause.
+    checkpointed_count = Article.objects.filter(
+        daily_run_id__in=run_ids,
+        status='generating',
+    ).update(status='pending', task_id='paused', error_message='')
+
+    terminated_count = len(active_task_ids)
+    if active_task_ids:
+        try:
+            # At most worker concurrency tasks should be generating, rather
+            # than the hundreds of future ETA tasks revoked by the old code.
+            celery_app.control.revoke(
+                active_task_ids,
+                terminate=True,
+                signal='SIGTERM',
+            )
+        except Exception as e:
+            terminated_count = 0
+            print(f"Failed to terminate active tasks for runs {run_ids}: {e}")
+
+    return {
+        'runs': paused_count,
+        'active_tasks': terminated_count,
+        'checkpointed': checkpointed_count,
+    }
+
+
 @require_http_methods(["POST"])
 def pause_daily_run(request, site_domain, run_id):
-    """Stop a run's Celery work while preserving its resumable database state."""
+    """Stop a run's active work while preserving its resumable database state."""
     site = get_object_or_404(Site, domain=site_domain)
     run = get_object_or_404(DailyRun, run_number=run_id, site=site)
 
     if run.status == 'running':
-        # Change the run state first so tasks that race with the revoke request
-        # see "paused" and exit without starting new work.
-        DailyRun.objects.filter(id=run.id).update(status='paused')
-
-        from app.celery import app as celery_app
-        from .models import Article
-
-        task_ids = list(
-            Article.objects
-            .filter(daily_run=run, status__in=['generating', 'pending'])
-            .exclude(task_id='')
-            .values_list('task_id', flat=True)
+        result = _pause_run_ids([run.id])
+        print(
+            f"[PAUSE] Daily run {run.id} for {site.domain} paused. "
+            f"Terminated {result['active_tasks']} active task(s); "
+            f"checkpointed {result['checkpointed']} article(s)."
         )
-
-        revoked_count = len(task_ids)
-        if task_ids:
-            try:
-                celery_app.control.revoke(task_ids, terminate=True, signal='SIGTERM')
-            except Exception as e:
-                revoked_count = 0
-                print(f"Failed to revoke tasks for run {run.id}: {e}")
-
-        # A killed in-flight article must become pending again. Its site,
-        # DailyRun, KeywordList and keyword_index remain unchanged, which is
-        # the checkpoint process_daily_run uses when this run is resumed.
-        Article.objects.filter(
-            daily_run=run,
-            status='generating',
-        ).update(status='pending', error_message='')
-
-        preserved_count = Article.objects.filter(
-            daily_run=run,
-            status__in=['ready', 'published'],
-        ).count()
-        print(f"[PAUSE] Daily run {run.id} for {site.domain} paused. Revoked {revoked_count} tasks; preserved {preserved_count} completed articles.")
         messages.info(
             request,
-            f'Run paused. {revoked_count} queued/active task(s) stopped and '
-            f'{preserved_count} completed article(s) preserved. You can resume anytime.'
+            f"Run paused. {result['active_tasks']} active task(s) terminated; "
+            "all article and keyword progress was preserved."
         )
 
     if request.POST.get('return_to') == 'dashboard':
@@ -1604,20 +1641,46 @@ def pause_daily_run(request, site_domain, run_id):
 
 
 @require_http_methods(["POST"])
+def pause_all_daily_runs(request):
+    """Pause every running run without materializing its pending task IDs."""
+    run_ids = list(
+        DailyRun.objects
+        .filter(status='running')
+        .values_list('id', flat=True)
+    )
+    result = _pause_run_ids(run_ids)
+    messages.warning(
+        request,
+        f"Paused {result['runs']} run(s) and terminated "
+        f"{result['active_tasks']} active task(s). All progress was preserved."
+    )
+    return redirect('dashboard:home')
+
+
+@require_http_methods(["POST"])
 def resume_daily_run(request, site_domain, run_id):
     """Resume a paused daily run."""
     site = get_object_or_404(Site, domain=site_domain)
     run = get_object_or_404(DailyRun, run_number=run_id, site=site)
-    
+
     if run.status == 'paused':
+        from .models import Article
+
+        # Invalidate old ETA messages before making the run executable again.
+        # process_daily_run will assign fresh IDs as it re-schedules each row.
+        Article.objects.filter(
+            daily_run=run,
+            status='pending',
+        ).update(task_id='paused')
         DailyRun.objects.filter(id=run.id).update(status='running')
-        
-        # Re-trigger the scheduler to continue processing
+
         from .tasks import process_daily_run
         process_daily_run.delay(run.id)
-        
+
         messages.success(request, 'Daily run resumed!')
-    
+
+    if request.POST.get('return_to') == 'dashboard':
+        return redirect('dashboard:home')
     return redirect('dashboard:daily_run_status', site_domain=site_domain, run_id=run.run_number)
 
 

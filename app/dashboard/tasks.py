@@ -1,5 +1,6 @@
 import datetime
 from celery import shared_task
+from celery.utils.uuid import uuid
 from django.db.models import Q
 from django.utils import timezone
 from .models import DailyRun, Article, APIKey, ProxySettings, Site, SiteLog, KeywordList
@@ -98,14 +99,15 @@ def process_daily_run(run_id):
             break
         
         eta = start_dt + datetime.timedelta(seconds=scheduled_count * interval_seconds)
-        task = generate_single_article.apply_async(
-            args=[p_article.id, run.id], 
-            eta=eta
-        )
-        p_article.task_id = str(task.id)
-        # Assuming we check `daily_run_id` as well later
+        task_id = uuid()
+        p_article.task_id = task_id
         p_article.daily_run = run
         p_article.save(update_fields=['daily_run', 'task_id'])
+        generate_single_article.apply_async(
+            args=[p_article.id, run.id],
+            eta=eta,
+            task_id=task_id,
+        )
         
         scheduled_count += 1
         
@@ -145,13 +147,15 @@ def process_daily_run(run_id):
             
             # Schedule execution
             eta = start_dt + datetime.timedelta(seconds=scheduled_count * interval_seconds)
-            
-            task = generate_single_article.apply_async(
-                args=[article.id, run.id], 
-                eta=eta
-            )
-            article.task_id = str(task.id)
+
+            task_id = uuid()
+            article.task_id = task_id
             article.save(update_fields=['task_id'])
+            generate_single_article.apply_async(
+                args=[article.id, run.id],
+                eta=eta,
+                task_id=task_id,
+            )
             
             scheduled_count += 1
             existing_set.add(idx)
@@ -164,17 +168,28 @@ def generate_single_article(self, article_id, run_id=None):
     """
     Worker task: Generates and publishes a single article.
     """
+    article = None
+    run = None
     try:
         article = Article.objects.get(id=article_id)
-        
+
         # Check for idempotency: if it isn't pending, it was already handled or is running
         if article.status != 'pending':
             print(f"[SKIP] Article {article_id} is '{article.status}'. Skipping duplicate execution.")
             return f"Already {article.status}"
-        
-        # Save Task ID for Force Kill
-        if self.request.id:
-            article.task_id = self.request.id
+
+        # A pause checkpoints pending work by replacing task_id with a sentinel,
+        # and a resume assigns a fresh ID before publishing the replacement task.
+        # Any older ETA message is therefore harmless even if it wakes later.
+        request_task_id = str(self.request.id or '')
+        if article.task_id and request_task_id and article.task_id != request_task_id:
+            print(f"[SKIP] Stale task {request_task_id} for article {article_id}.")
+            return "Stale task"
+
+        # Support legacy tasks that were queued before task IDs were persisted
+        # ahead of publication.
+        if request_task_id and article.task_id != request_task_id:
+            article.task_id = request_task_id
             article.save(update_fields=['task_id'])
             
         site = article.site
@@ -330,6 +345,21 @@ def generate_single_article(self, article_id, run_id=None):
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
+
+        # A termination requested by Pause must not race the checkpoint update
+        # and turn resumable work into a failure.
+        if run:
+            current_run_status = (
+                DailyRun.objects
+                .filter(id=run.id)
+                .values_list('status', flat=True)
+                .first()
+            )
+            if current_run_status == 'paused':
+                Article.objects.filter(id=article_id).update(status='pending', error_message='')
+                print(f"[PAUSE] Article {article_id} checkpointed after task termination.")
+                return "Run paused"
+
         print(f"Error generating article {article_id}: {e}\n{error_trace}")
         article.status = 'failed'
         article.error_message = str(e)

@@ -93,7 +93,16 @@
             <span style="display: inline-block; width: 10px; height: 10px; background: #4ade80; border-radius: 50%; margin-right: 8px; animation: pulse 2s infinite;"></span>
             Currently Running
         </h2>
-        <span class="badge badge-success">{{ running_runs|length }} Active</span>
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <span class="badge badge-success">{{ running_runs|length }} Active</span>
+            <form method="post" action="{% url 'dashboard:pause_all_daily_runs' %}" style="margin: 0;">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-warning"
+                        onclick="return confirm('Pause every running job now? Active work will stop and all article and keyword progress will be preserved.');">
+                    ⏸ Stop All & Keep
+                </button>
+            </form>
+        </div>
     </div>
     <div class="card-body" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">
         {% for item in running_runs %}
@@ -119,6 +128,49 @@
             </div>
             <div style="background: rgba(255,255,255,0.1); border-radius: 100px; height: 8px; overflow: hidden;">
                 <div style="width: {{ item.progress }}%; height: 100%; background: var(--accent-gradient); border-radius: 100px; transition: width 0.5s ease;"></div>
+            </div>
+            <div style="text-align: right; font-size: 11px; color: var(--text-muted); margin-top: 4px;">{{ item.progress }}%</div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- ============================================================ -->
+<!-- Paused Runs -->
+<!-- ============================================================ -->
+{% if paused_runs %}
+<div class="card mb-4">
+    <div class="card-header">
+        <h2 class="card-title">
+            <span style="display: inline-block; width: 10px; height: 10px; background: var(--warning); border-radius: 50%; margin-right: 8px;"></span>
+            Paused Runs
+        </h2>
+        <span class="badge badge-warning">{{ paused_runs|length }} Paused</span>
+    </div>
+    <div class="card-body" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">
+        {% for item in paused_runs %}
+        <div style="background: rgba(245,158,11,0.04); border-radius: 12px; padding: 16px; border: 1px solid rgba(245,158,11,0.2);">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
+                <span style="font-weight: 600;">{{ item.run.site.domain }}</span>
+                <div style="display: flex; align-items: center; gap: 6px; margin-left: auto;">
+                    <a href="{% url 'dashboard:daily_run_status' item.run.site.domain item.run.run_number %}" class="btn btn-sm btn-ghost">View →</a>
+                    <form method="post" action="{% url 'dashboard:resume_daily_run' item.run.site.domain item.run.run_number %}" style="margin: 0;">
+                        {% csrf_token %}
+                        <input type="hidden" name="return_to" value="dashboard">
+                        <button type="submit" class="btn btn-sm btn-primary"
+                                onclick="return confirm('Resume this run from its saved article and keyword progress?');">
+                            ▶ Resume
+                        </button>
+                    </form>
+                </div>
+            </div>
+            <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">
+                Run #{{ item.run.run_number }} &middot; {{ item.run.keyword_list.name|default:"All keyword lists" }}<br>
+                {{ item.live_count }} / {{ item.run.target_count }} articles &middot; Started {{ item.run.started_at|date:"H:i" }} UTC
+            </div>
+            <div style="background: rgba(255,255,255,0.1); border-radius: 100px; height: 8px; overflow: hidden;">
+                <div style="width: {{ item.progress }}%; height: 100%; background: var(--warning); border-radius: 100px;"></div>
             </div>
             <div style="text-align: right; font-size: 11px; color: var(--text-muted); margin-top: 4px;">{{ item.progress }}%</div>
         </div>

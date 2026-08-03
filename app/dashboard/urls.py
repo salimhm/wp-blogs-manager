@@ -44,6 +44,7 @@ urlpatterns = [
     path('sites/<str:site_domain>/articles/mass-publish/', views.mass_publish_articles, name='mass_publish_articles'),
     
     # Daily Runs
+    path('daily-runs/pause-all/', views.pause_all_daily_runs, name='pause_all_daily_runs'),
     path('sites/<str:site_domain>/daily-run/start/', views.start_daily_run, name='start_daily_run'),
     path('sites/<str:site_domain>/daily-run/history/', views.daily_run_history, name='daily_run_history'),
     path('sites/<str:site_domain>/daily-run/<int:run_id>/', views.daily_run_status, name='daily_run_status'),
