@@ -227,6 +227,9 @@ class DailyRun(models.Model):
         verbose_name_plural = "Daily Runs"
         ordering = ['-created_at']
         unique_together = ['site', 'run_number']  # Ensure unique per site
+        indexes = [
+            models.Index(fields=['site', '-created_at'], name='daily_run_site_created_idx'),
+        ]
 
     def save(self, *args, **kwargs):
         # Auto-increment run_number per site on first save

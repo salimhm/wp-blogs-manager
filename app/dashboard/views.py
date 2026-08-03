@@ -133,11 +133,18 @@ def dashboard_home(request):
     # ── Automations dict (1 query) ───────────────────────────────────────────
     automations = {a.site_id: a for a in SiteAutomation.objects.filter(site_id__in=site_ids)}
 
-    # ── Last run per site (1 query, grouped in Python) ───────────────────────
-    last_run_map = {}
-    for run in DailyRun.objects.filter(site_id__in=site_ids).order_by('site_id', '-created_at'):
-        if run.site_id not in last_run_map:
-            last_run_map[run.site_id] = run
+    # ── Last run per site (1 bounded query) ──────────────────────────────────
+    # PostgreSQL DISTINCT ON keeps this result proportional to the number of
+    # sites. The previous Python grouping transferred every historical run
+    # from PostgreSQL and discarded all but one row per site.
+    last_runs = (
+        DailyRun.objects
+        .filter(site_id__in=site_ids)
+        .order_by('site_id', '-created_at')
+        .distinct('site_id')
+        .only('id', 'site_id', 'status', 'created_at')
+    )
+    last_run_map = {run.site_id: run for run in last_runs}
 
     # Pre-compute 14 date labels/keys once
     date_labels, date_keys = [], []
