@@ -1530,9 +1530,11 @@ def start_daily_run(request, site_domain):
     from .models import SiteAutomation
     automation, _ = SiteAutomation.objects.get_or_create(site=site)
     
-    # Calculate capacity safely based on tokens/article limit
-    active_keys_count = site.api_keys.filter(is_active=True, provider='groq').count()
-    estimated_capacity = active_keys_count * 132
+    # Use the same quota-derived capacity as Celery Beat.
+    from .groq_quota import daily_article_capacity
+    active_key_objects = list(site.api_keys.filter(is_active=True, provider='groq'))
+    active_keys_count = len(active_key_objects)
+    estimated_capacity = daily_article_capacity(active_key_objects)
 
     if request.method == 'POST':
         keyword_list_id = request.POST.get('keyword_list')
@@ -1549,7 +1551,7 @@ def start_daily_run(request, site_domain):
                 import datetime
                 
                 now = timezone.now()
-                target_count = active_keys_count * 132
+                target_count = daily_article_capacity(active_key_objects)
                 
                 # Force the next background beat to happen exactly 24 hours from this second
                 automation.next_run_time = now + datetime.timedelta(hours=24)
@@ -1736,13 +1738,29 @@ def pause_all_daily_runs(request):
 
 
 def _cancel_run_ids(run_ids):
-    """Permanently cancel runs and discard only unfinished article checkpoints."""
+    """Permanently cancel runs and discard all unfinished work for their sites."""
     from app.celery import app as celery_app
-    from .models import Article
+    from django.db.models import Q
+    from django.utils import timezone
+    import datetime
+    from .models import Article, SiteAutomation
 
     run_ids = list(run_ids)
     if not run_ids:
-        return {'runs': 0, 'revoked_tasks': 0, 'active_tasks': 0, 'deleted_articles': 0}
+        return {
+            'runs': 0,
+            'revoked_tasks': 0,
+            'active_tasks': 0,
+            'deleted_articles': 0,
+            'deferred_automations': 0,
+        }
+
+    site_ids = list(
+        DailyRun.objects
+        .filter(id__in=run_ids)
+        .values_list('site_id', flat=True)
+        .distinct()
+    )
 
     # Flip the stop signal first so tasks that wake during cancellation exit.
     cancelled_count = DailyRun.objects.filter(
@@ -1750,9 +1768,18 @@ def _cancel_run_ids(run_ids):
         status__in=['running', 'paused'],
     ).update(status='cancelled')
 
+    # Include legacy orphan rows. Older schedulers created pending articles
+    # without a run and later automation cycles adopted them as new work.
+    unfinished_scope = Q(daily_run_id__in=run_ids) | Q(
+        site_id__in=site_ids,
+        daily_run__isnull=True,
+    )
+    unfinished_articles = Article.objects.filter(
+        unfinished_scope,
+        status__in=['pending', 'generating'],
+    )
     unfinished_tasks = list(
-        Article.objects
-        .filter(daily_run_id__in=run_ids, status__in=['pending', 'generating'])
+        unfinished_articles
         .exclude(task_id='')
         .exclude(task_id='paused')
         .values_list('task_id', 'status')
@@ -1780,12 +1807,17 @@ def _cancel_run_ids(run_ids):
             terminated_count = 0
             print(f"Failed to terminate active tasks for cancelled runs {run_ids}: {exc}")
 
-    # Ready/published work is deliberately preserved. Removing pending and
-    # generating rows releases their keyword indices for a brand-new run.
-    unfinished_articles = Article.objects.filter(
-        daily_run_id__in=run_ids,
-        status__in=['pending', 'generating'],
+    # Prevent Celery Beat from recreating the workload immediately after a
+    # restart. Manual runs remain available; auto-pilot resumes tomorrow.
+    deferred_automations = SiteAutomation.objects.filter(
+        site_id__in=site_ids,
+        is_enabled=True,
+    ).update(
+        next_run_time=timezone.now() + datetime.timedelta(hours=24),
     )
+
+    # Ready/published work is deliberately preserved. Removing unfinished rows
+    # releases their keyword indices for a genuinely new run.
     deleted_articles = unfinished_articles.count()
     unfinished_articles.delete()
 
@@ -1794,6 +1826,7 @@ def _cancel_run_ids(run_ids):
         'revoked_tasks': revoked_count,
         'active_tasks': terminated_count,
         'deleted_articles': deleted_articles,
+        'deferred_automations': deferred_automations,
     }
 
 
@@ -1812,6 +1845,7 @@ def cancel_all_daily_runs(request):
         f"{result['revoked_tasks']} queued task(s), terminated "
         f"{result['active_tasks']} active task(s), and removed "
         f"{result['deleted_articles']} unfinished article checkpoint(s). "
+        f"Deferred {result['deferred_automations']} automation(s) for 24 hours. "
         "Ready and published articles were preserved."
     )
     return redirect('dashboard:home')
@@ -1856,7 +1890,8 @@ def cancel_daily_run(request, site_domain, run_id):
             request,
             f"Run permanently cancelled. {result['revoked_tasks']} queued task(s) revoked, "
             f"{result['active_tasks']} active task(s) "
-            f"terminated and {result['deleted_articles']} unfinished checkpoint(s) removed."
+            f"terminated and {result['deleted_articles']} unfinished checkpoint(s) removed. "
+            "Auto-pilot was deferred for 24 hours."
         )
     
     return redirect('dashboard:daily_run_status', site_domain=site_domain, run_id=run.run_number)

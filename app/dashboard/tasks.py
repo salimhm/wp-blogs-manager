@@ -1,7 +1,6 @@
 import datetime
 from uuid import uuid4
 from celery import shared_task
-from django.db.models import Q
 from django.utils import timezone
 from .models import DailyRun, Article, APIKey, ProxySettings, Site, SiteLog, KeywordList
 from .utils import (
@@ -88,13 +87,12 @@ def process_daily_run(run_id):
     # Schedule tasks
     scheduled_count = 0
     
-    # 1. Re-schedule this run's paused work, plus any legacy pending articles
-    # that have never been assigned to a run. Never steal pending articles from
-    # another run for the same site.
+    # Re-schedule only checkpoints owned by this run. Orphaned legacy rows must
+    # never be adopted: doing so can resurrect permanently cancelled work when
+    # Celery Beat starts a later automation cycle.
     pending_articles = (
         Article.objects
-        .filter(site=run.site, status='pending')
-        .filter(Q(daily_run=run) | Q(daily_run__isnull=True))
+        .filter(site=run.site, status='pending', daily_run=run)
         .order_by('id')
     )
     
@@ -175,7 +173,7 @@ def generate_single_article(self, article_id, run_id=None):
     article = None
     run = None
     try:
-        article = Article.objects.get(id=article_id)
+        article = Article.objects.select_related('daily_run').get(id=article_id)
 
         # Check for idempotency: if it isn't pending, it was already handled or is running
         if article.status != 'pending':
@@ -197,7 +195,12 @@ def generate_single_article(self, article_id, run_id=None):
             article.save(update_fields=['task_id'])
             
         site = article.site
-        run = DailyRun.objects.get(id=run_id) if run_id else None
+        # The article's durable relationship is authoritative even for legacy
+        # Celery messages that were published without run_id.
+        run = article.daily_run
+        if run_id and (run is None or run.id != run_id):
+            print(f"[SKIP] Article {article_id} no longer belongs to run {run_id}.")
+            return "Run ownership changed"
         
         # Check if run is cancelled or paused
         if run:
@@ -589,6 +592,14 @@ def check_site_automations():
     for auto in automations:
         # If next_run_time is set and in the future, we just wait.
         if auto.next_run_time and now < auto.next_run_time:
+            continue
+
+        # Never overlap or revive a site's current run. A paused run remains a
+        # deliberate stop signal until the user resumes or permanently cancels it.
+        if DailyRun.objects.filter(
+            site=auto.site,
+            status__in=['running', 'paused'],
+        ).exists():
             continue
             
         print(f"[Auto-Pilot 24H] Triggering cycle for {auto.site.domain}.")

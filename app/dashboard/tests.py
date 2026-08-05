@@ -1,3 +1,4 @@
+import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -12,7 +13,17 @@ from .groq_quota import (
     parse_duration,
     record_attempt,
 )
-from .models import APIKey, GroqUsage, Site
+from .models import (
+    APIKey,
+    Article,
+    DailyRun,
+    GroqUsage,
+    KeywordList,
+    Site,
+    SiteAutomation,
+)
+from .tasks import check_site_automations, process_daily_run
+from .views import _cancel_run_ids
 from .utils import call_groq_with_fallback
 
 
@@ -168,3 +179,113 @@ class GroqUsageTests(TestCase):
         self.assertEqual(usage.request_count, 2)
         self.assertEqual(usage.total_tokens, 3400)
         self.assertEqual(usage.rate_limit_count, 1)
+
+
+class RunCancellationTests(TestCase):
+    def setUp(self):
+        self.site = Site.objects.create(domain='cancel-test.example')
+        self.keyword_list = KeywordList.objects.create(
+            name='cancel-test',
+            keywords_json=[{'h2s': ['first heading']}],
+            item_count=1,
+        )
+
+    def make_run(self, status='running'):
+        return DailyRun.objects.create(
+            site=self.site,
+            keyword_list=self.keyword_list,
+            target_count=1,
+            start_time=datetime.time(0, 0),
+            end_time=datetime.time(23, 59),
+            status=status,
+        )
+
+    @patch('dashboard.tasks.generate_single_article.apply_async')
+    def test_daily_run_does_not_adopt_orphaned_pending_article(self, apply_async):
+        run = self.make_run()
+        orphan = Article.objects.create(
+            site=self.site,
+            keyword_list=self.keyword_list,
+            keyword_index=0,
+            status='pending',
+            task_id='legacy-task',
+        )
+
+        result = process_daily_run(run.id)
+
+        orphan.refresh_from_db()
+        self.assertEqual(result, 'Scheduled 0 articles')
+        self.assertIsNone(orphan.daily_run_id)
+        self.assertEqual(orphan.task_id, 'legacy-task')
+        apply_async.assert_not_called()
+
+    @patch('app.celery.app.control.revoke')
+    def test_permanent_cancel_removes_orphans_and_defers_automation(self, revoke):
+        run = self.make_run()
+        SiteAutomation.objects.create(
+            site=self.site,
+            keyword_list=self.keyword_list,
+            is_enabled=True,
+            next_run_time=timezone.now(),
+        )
+        linked = Article.objects.create(
+            site=self.site,
+            keyword_list=self.keyword_list,
+            keyword_index=0,
+            daily_run=run,
+            status='pending',
+            task_id='linked-task',
+        )
+        orphan = Article.objects.create(
+            site=self.site,
+            keyword_list=self.keyword_list,
+            keyword_index=1,
+            status='generating',
+            task_id='orphan-task',
+        )
+        ready = Article.objects.create(
+            site=self.site,
+            keyword_list=self.keyword_list,
+            keyword_index=2,
+            daily_run=run,
+            status='ready',
+        )
+
+        before = timezone.now()
+        result = _cancel_run_ids([run.id])
+
+        run.refresh_from_db()
+        automation = SiteAutomation.objects.get(site=self.site)
+        self.assertEqual(run.status, 'cancelled')
+        self.assertFalse(Article.objects.filter(id=linked.id).exists())
+        self.assertFalse(Article.objects.filter(id=orphan.id).exists())
+        self.assertTrue(Article.objects.filter(id=ready.id).exists())
+        self.assertEqual(result['deleted_articles'], 2)
+        self.assertEqual(result['deferred_automations'], 1)
+        self.assertGreater(
+            automation.next_run_time,
+            before + datetime.timedelta(hours=23),
+        )
+        self.assertEqual(revoke.call_count, 2)
+
+    @patch('dashboard.tasks.process_daily_run.delay')
+    def test_automation_does_not_overlap_running_run(self, delay):
+        existing_run = self.make_run()
+        APIKey.objects.create(
+            site=self.site,
+            provider='groq',
+            api_key='automation-key',
+        )
+        SiteAutomation.objects.create(
+            site=self.site,
+            keyword_list=self.keyword_list,
+            is_enabled=True,
+            next_run_time=timezone.now() - datetime.timedelta(minutes=1),
+        )
+
+        result = check_site_automations()
+
+        self.assertEqual(result, 'Triggered 0 automations')
+        self.assertEqual(DailyRun.objects.filter(site=self.site).count(), 1)
+        self.assertTrue(DailyRun.objects.filter(id=existing_run.id).exists())
+        delay.assert_not_called()
