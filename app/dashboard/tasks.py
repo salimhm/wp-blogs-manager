@@ -4,7 +4,11 @@ from celery import shared_task
 from django.db.models import Q
 from django.utils import timezone
 from .models import DailyRun, Article, APIKey, ProxySettings, Site, SiteLog, KeywordList
-from .utils import generate_article_content, publish_to_wordpress
+from .utils import (
+    GroqRetryLater,
+    generate_article_content,
+    publish_to_wordpress,
+)
 
 @shared_task
 def process_daily_run(run_id):
@@ -163,7 +167,7 @@ def process_daily_run(run_id):
     return f"Scheduled {scheduled_count} articles"
 
 
-@shared_task(bind=True)
+@shared_task(bind=True, max_retries=None)
 def generate_single_article(self, article_id, run_id=None):
     """
     Worker task: Generates and publishes a single article.
@@ -215,10 +219,11 @@ def generate_single_article(self, article_id, run_id=None):
                 article.save(update_fields=['daily_run'])
 
         article.status = 'generating'
-        article.save()
+        article.error_message = ''
+        article.save(update_fields=['status', 'error_message'])
         
         # 1. Get ALL active API keys for this site (for cross-provider fallback)
-        api_key_objs = APIKey.objects.filter(site=site, is_active=True)
+        api_key_objs = APIKey.objects.filter(site=site, is_active=True, provider='groq')
         if not api_key_objs.exists():
             raise Exception("No active API keys found for site")
         
@@ -228,7 +233,13 @@ def generate_single_article(self, article_id, run_id=None):
             masked_key = f"{k.api_key[:4]}...{k.api_key[-4:]}" if len(k.api_key) > 8 else "***"
             print(f"Loaded API key for {k.provider}: {masked_key}")
             # api_keys list passed to utils needs simple dicts
-            api_keys.append({'provider': k.provider, 'api_key': k.api_key, 'is_active': k.is_active})
+            api_keys.append({
+                'id': k.id,
+                'provider': k.provider,
+                'api_key': k.api_key,
+                'model_name': k.model_name,
+                'is_active': k.is_active,
+            })
             
         # Get proxy
         proxy_obj = ProxySettings.objects.filter(site=site, is_active=True).first()
@@ -366,6 +377,30 @@ def generate_single_article(self, article_id, run_id=None):
             else:
                 print(f"[WP PUBLISH FAILED] Article {article_id}: {message}")
                 raise Exception(f"WordPress publish failed: {message}")
+
+    except GroqRetryLater as e:
+        if article is None:
+            return "Article no longer exists"
+
+        if run:
+            current_run_status = (
+                DailyRun.objects
+                .filter(id=run.id)
+                .values_list('status', flat=True)
+                .first()
+            )
+            if current_run_status != 'running':
+                return f"Run {current_run_status}"
+
+        Article.objects.filter(id=article_id, status='generating').update(
+            status='pending',
+            error_message=f'Groq cooling down: retrying in {e.retry_after}s',
+        )
+        print(
+            f"[GROQ COOLDOWN] Article {article_id} rescheduled in "
+            f"{e.retry_after}s: {e.reason}"
+        )
+        raise self.retry(exc=e, countdown=e.retry_after, max_retries=None)
 
     except Exception as e:
         import traceback
@@ -558,17 +593,23 @@ def check_site_automations():
             
         print(f"[Auto-Pilot 24H] Triggering cycle for {auto.site.domain}.")
         
-        # 1. Dynamically calculate the quota based on the number of active API keys RIGHT NOW.
-        active_keys_count = auto.site.api_keys.filter(is_active=True, provider='groq').count()
-        if active_keys_count == 0:
+        # 1. Calculate a safe target from each key's configured model and
+        # free-tier daily token budget.
+        active_keys = list(
+            auto.site.api_keys.filter(is_active=True, provider='groq')
+        )
+        if not active_keys:
             print(f"[Auto-Pilot 24H] {auto.site.domain} has 0 active API keys. Skipping run.")
             # We defer checking again for a short duration (e.g. 1 hour) so we don't spam.
             auto.next_run_time = now + datetime.timedelta(hours=1)
             auto.save(update_fields=['next_run_time'])
             continue
             
-        # Target count is: keys * 132
-        target_count = active_keys_count * 132
+        from .groq_quota import daily_article_capacity
+        target_count = daily_article_capacity(active_keys)
+        print(
+            f"[Auto-Pilot 24H] Quota-aware target: {target_count} articles."
+        )
         
         # 2. DailyRun boundaries are now to now+20h
         start_time_str = now.strftime('%H:%M')

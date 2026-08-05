@@ -541,26 +541,35 @@ def search_youtube(query: str, max_results: int = 2) -> list:
 # Groq LLM Integration (Optimized & Rate-Limited)
 # ============================================
 
-import time
-import re
 import json
+import time
 
-GROQ_MODELS = [
-    'llama-3.3-70b-versatile',
-    'llama-3.1-8b-instant',
-]
-
-# Track when an API key + model will be available again
-from django.core.cache import cache
-
-def get_cooldown(api_key: str, model: str) -> float:
-    cache_key = f"cooldown_{api_key}_{model}"
-    timestamp_when_available = cache.get(cache_key, 0)
-    return max(0, timestamp_when_available - time.time())
-
-def set_cooldown(api_key: str, model: str, wait_time: float):
-    cache_key = f"cooldown_{api_key}_{model}"
-    cache.set(cache_key, time.time() + wait_time, timeout=int(wait_time) + 60)
+from .groq_quota import (
+    ARTICLE_MAX_TOKENS,
+    DAILY_SAFETY_RATIO,
+    MIN_COMPLETION_TOKENS,
+    GroqPermanentError,
+    GroqRetryLater,
+    acquire_lease,
+    completion_budget,
+    cooldown_remaining,
+    estimate_prompt_tokens,
+    get_daily_usage_map,
+    jittered,
+    learned_tpm,
+    lease_remaining,
+    model_limits,
+    models_for_key,
+    parse_payload_limit,
+    quota_pool_id,
+    record_attempt,
+    release_lease,
+    remember_tpm,
+    retry_after_from_response,
+    rotate_configs,
+    seconds_until_utc_tomorrow,
+    set_cooldown,
+)
 
 def _clean_llm_content(content: str) -> str:
     content = content.strip()
@@ -572,149 +581,280 @@ def _clean_llm_content(content: str) -> str:
                 content = content[idx:].strip()
     return content
 
-def call_groq_with_fallback(api_keys: list, prompt: str, max_tokens: int = 8000, proxy: Optional[dict] = None) -> tuple[str, dict]:
-    """
-    Call Groq API with robust multi-key, multi-model fallback and strict rate-limit handling.
-    Creates a new connection per request to ensure rotating proxies assign a new IP.
-    """
-    import random
-    from django.core.cache import cache
-    
-    api_keys_copy = list(api_keys)
-    if not api_keys_copy:
-        raise ValueError("No API keys provided")
-        
-    # Enforce strict n+1 round-robin across celery workers using Cache
-    # We sort by API key string to ensure consistent ordering across processes
-    api_keys_copy.sort(key=lambda x: x.get('api_key', ''))
-    
-    current_index = cache.get('groq_api_key_index', 0)
-    # Increment for the next worker
-    cache.set('groq_api_key_index', current_index + 1, timeout=86400)
-    
-    # Shift the list so the current index is at the front (modulo math)
-    start_idx = current_index % len(api_keys_copy)
-    api_keys_copy = api_keys_copy[start_idx:] + api_keys_copy[:start_idx]
-    
-    max_retries = len(api_keys_copy) * len(GROQ_MODELS) * 2
-    
-    for retry in range(max_retries):
-        errors = []
-        
-        for config in api_keys_copy:
-            if not config.get('is_active') or config.get('provider') != 'groq':
+def call_groq_with_fallback(
+    api_keys: list,
+    prompt: str,
+    max_tokens: int = ARTICLE_MAX_TOKENS,
+    proxy: Optional[dict] = None,
+) -> tuple[str, dict]:
+    """Call Groq once per available quota pool without blocking a worker."""
+    configs = [
+        config for config in api_keys
+        if config.get('is_active') and config.get('provider') == 'groq'
+    ]
+    if not configs:
+        raise GroqPermanentError("No active Groq API keys provided")
+
+    configs = rotate_configs(configs)
+    usage_map = get_daily_usage_map([
+        config.get('id') for config in configs if config.get('id')
+    ])
+    waits = []
+    permanent_errors = []
+    transient_errors = []
+    prompt_estimate = estimate_prompt_tokens(prompt)
+
+    for config in configs:
+        api_key = config['api_key']
+        api_key_id = config.get('id')
+        pool_id = quota_pool_id(config)
+
+        for model in models_for_key(config):
+            limits = model_limits(model)
+            current_tpm = int(learned_tpm(pool_id, model) or limits['tpm'])
+            used_today = int(usage_map.get((api_key_id, model), 0))
+            safe_daily_limit = int(limits['tpd'] * DAILY_SAFETY_RATIO)
+
+            if used_today >= safe_daily_limit:
+                waits.append(seconds_until_utc_tomorrow())
                 continue
-                
-            api_key = config['api_key']
-            
-            for model in GROQ_MODELS:
-                if get_cooldown(api_key, model) > 0:
-                    continue
-                
-                url = "https://api.groq.com/openai/v1/chat/completions"
-                headers = {
-                    'Authorization': f'Bearer {api_key}',
-                    'Content-Type': 'application/json',
-                    'Accept-Encoding': 'gzip, deflate'  # Compress bandwidth significantly
-                }
-                system_prompt = "You are a professional content writer. Write plain, natural prose. Output valid json if requested."
-                
+
+            cooling = cooldown_remaining(pool_id, model)
+            if cooling > 0:
+                waits.append(cooling)
+                continue
+
+            leased_for = lease_remaining(pool_id, model)
+            if leased_for > 0:
+                waits.append(leased_for)
+                continue
+
+            output_budget = completion_budget(prompt, max_tokens, model, current_tpm)
+            if output_budget < MIN_COMPLETION_TOKENS:
+                permanent_errors.append(
+                    f"{model} cannot fit this prompt inside its {current_tpm} TPM limit"
+                )
+                continue
+
+            estimated_request_tokens = prompt_estimate + output_budget
+            if used_today + estimated_request_tokens > safe_daily_limit:
+                waits.append(seconds_until_utc_tomorrow())
+                continue
+
+            acquired, lease_seconds = acquire_lease(
+                pool_id,
+                model,
+                estimated_request_tokens,
+                current_tpm,
+            )
+            if not acquired:
+                waits.append(max(5, lease_remaining(pool_id, model)))
+                continue
+
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            headers = {
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json',
+                'Accept-Encoding': 'gzip, deflate',
+            }
+            system_prompt = (
+                "You are a professional content writer. Write plain, natural "
+                "prose. Output valid JSON if requested."
+            )
+
+            # A 413 gets at most one retry, and only with a smaller payload.
+            for payload_attempt in range(2):
                 data = {
                     'model': model,
                     'messages': [
                         {'role': 'system', 'content': system_prompt},
-                        {'role': 'user', 'content': prompt}
+                        {'role': 'user', 'content': prompt},
                     ],
-                    'max_tokens': max_tokens,
+                    'max_tokens': output_budget,
                     'temperature': 0.7,
-                    'presence_penalty': 0.6,
-                    'frequency_penalty': 0.1,
-                    'response_format': {"type": "json_object"}
+                    'response_format': {'type': 'json_object'},
                 }
-                
-                # We use a new session/request each time (requests.post) to ensure proxy IP rotation happens dynamically.
+                if model.startswith('openai/gpt-oss'):
+                    data['reasoning_effort'] = 'low'
                 try:
-                    proxy_info = f"via {list(proxy.values())[0][:30]}..." if proxy else "DIRECT"
-                    print(f"[LLM REQUEST] Groq/{model} [Key ending in {api_key[-4:]}] - {proxy_info}")
-                    
-                    response = requests.post(url, json=data, headers=headers, timeout=160, proxies=proxy)
-                    
-                    if response.status_code == 200:
-                        try:
-                            resp_json = response.json()
-                        except ValueError:
-                            print(f"Proxy returned 200 but invalid JSON: {response.text[:100]}...")
-                            errors.append(f"Proxy/JSON Error")
-                            continue
-                            
-                        content = _clean_llm_content(resp_json['choices'][0]['message']['content'])
-                        bytes_received = len(response.content)
-                        usage = resp_json.get('usage', {})
-                        meta = {
-                            'provider': 'groq',
-                            'model': model,
-                            'timestamp': time.time(),
-                            'bytes_received': bytes_received,
-                            'prompt_tokens': usage.get('prompt_tokens', 0),
-                            'completion_tokens': usage.get('completion_tokens', 0)
-                        }
-                        return content, meta
-                        
-                    if response.status_code in (429, 503):
-                        # Handle strict rate limits based on Groq headers
-                        wait_time = 60
-                        if 'retry-after' in response.headers:
-                            try: wait_time = float(response.headers['retry-after'])
-                            except: pass
-                        elif 'x-ratelimit-reset-tokens' in response.headers:
-                            try:
-                                val = response.headers['x-ratelimit-reset-tokens']
-                                match = re.search(r'(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?', val)
-                                if match:
-                                    m = int(match.group(1)) if match.group(1) else 0
-                                    s = float(match.group(2)) if match.group(2) else 0
-                                    wait_time = max(wait_time, m * 60 + s)
-                            except: pass
-                        elif 'x-ratelimit-reset-requests' in response.headers:
-                            try:
-                                val = response.headers['x-ratelimit-reset-requests']
-                                match = re.search(r'(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?', val)
-                                if match:
-                                    m = int(match.group(1)) if match.group(1) else 0
-                                    s = float(match.group(2)) if match.group(2) else 0
-                                    wait_time = max(wait_time, m * 60 + s)
-                            except: pass
-                        
-                        set_cooldown(api_key, model, wait_time + 1)
-                        print(f"Groq API Key {api_key[-4:]} with {model} rate limited. Cooldown: {wait_time:.1f}s")
-                        continue
-                        
-                    # If we get here, it's a non-200 and non-rate-limit error
-                    error_text = response.text
-                    if len(error_text) > 300:
-                        error_text = error_text[:300] + "... [TRUNCATED]"
-                    print(f"Groq returned {response.status_code}: {error_text}")
-                    response.raise_for_status()
-                    
-                except Exception as e:
-                    print(f"Request failed for {model}: {e}. The rotating proxy might have failed. Will retry.")
-                    errors.append(f"Proxy/Network Error: {str(e)}")
-                    continue
-                    
-        # If we exhausted all keys and models for this attempt, let's wait min cooldown and retry
-        wait_times = [get_cooldown(cfg['api_key'], m) for cfg in api_keys if cfg.get('is_active') and cfg.get('provider')=='groq' for m in GROQ_MODELS]
-        valid_waits = [w for w in wait_times if w > 0]
-        
-        if valid_waits:
-            min_wait = min(valid_waits)
-            print(f"All Groq keys/models rate limited. Waiting {min_wait:.1f}s before retry...")
-            time.sleep(min_wait + 1)
-        elif errors:
-            print("Network/proxy errors encountered. Waiting 5s before next attempt...")
-            time.sleep(5)
-            
-    raise Exception("Failed to generate content after trying multiple keys and proxy rotations.")
+                    proxy_info = (
+                        f"via {list(proxy.values())[0][:30]}..."
+                        if proxy else "DIRECT"
+                    )
+                    print(
+                        f"[LLM REQUEST] Groq/{model} [Key ending in {api_key[-4:]}] "
+                        f"budget={output_budget} lease={lease_seconds}s - {proxy_info}"
+                    )
+                    response = requests.post(
+                        url,
+                        json=data,
+                        headers=headers,
+                        timeout=160,
+                        proxies=proxy,
+                    )
+                except requests.RequestException as exc:
+                    message = f"Network error for {model}: {exc}"
+                    print(message)
+                    record_attempt(
+                        api_key_id,
+                        model,
+                        status_code=0,
+                        error=True,
+                        error_message=message,
+                        tpm_limit=current_tpm,
+                    )
+                    transient_errors.append(message)
+                    waits.append(30)
+                    break
 
+                header_tpm = response.headers.get('x-ratelimit-limit-tokens')
+                if header_tpm:
+                    remember_tpm(pool_id, model, header_tpm)
+                    try:
+                        current_tpm = int(header_tpm)
+                    except (TypeError, ValueError):
+                        pass
+
+                if response.status_code == 200:
+                    try:
+                        resp_json = response.json()
+                        content = _clean_llm_content(
+                            resp_json['choices'][0]['message']['content']
+                        )
+                    except (ValueError, KeyError, IndexError, TypeError) as exc:
+                        usage = {}
+                        message = f"Invalid Groq JSON response from {model}: {exc}"
+                        record_attempt(
+                            api_key_id,
+                            model,
+                            status_code=200,
+                            prompt_tokens=usage.get('prompt_tokens', 0),
+                            completion_tokens=usage.get('completion_tokens', 0),
+                            error=True,
+                            error_message=message,
+                            tpm_limit=current_tpm,
+                        )
+                        transient_errors.append(message)
+                        break
+
+                    usage = resp_json.get('usage', {})
+                    prompt_tokens = int(usage.get('prompt_tokens', 0) or 0)
+                    completion_tokens = int(usage.get('completion_tokens', 0) or 0)
+                    record_attempt(
+                        api_key_id,
+                        model,
+                        status_code=200,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        tpm_limit=current_tpm,
+                    )
+                    return content, {
+                        'provider': 'groq',
+                        'model': model,
+                        'timestamp': time.time(),
+                        'bytes_received': len(response.content),
+                        'prompt_tokens': prompt_tokens,
+                        'completion_tokens': completion_tokens,
+                        'max_tokens': output_budget,
+                        'quota_pool': pool_id,
+                    }
+
+                error_text = response.text[:500]
+                if response.status_code == 413:
+                    limit, requested = parse_payload_limit(response.text)
+                    record_attempt(
+                        api_key_id,
+                        model,
+                        status_code=413,
+                        payload_too_large=True,
+                        error=True,
+                        error_message=error_text,
+                        tpm_limit=limit or current_tpm,
+                    )
+                    if limit:
+                        remember_tpm(pool_id, model, limit)
+                        current_tpm = limit
+                    if (
+                        payload_attempt == 0
+                        and limit
+                        and requested
+                        and requested > limit
+                    ):
+                        reduced_budget = output_budget - (requested - limit) - 256
+                        if reduced_budget >= MIN_COMPLETION_TOKENS:
+                            output_budget = reduced_budget
+                            print(
+                                f"[GROQ 413] Reducing {model} output budget to "
+                                f"{output_budget}; retrying once."
+                            )
+                            continue
+                    permanent_errors.append(
+                        f"{model} payload is too large even after adaptive sizing"
+                    )
+                    release_lease(pool_id, model)
+                    break
+
+                if response.status_code == 429:
+                    wait_time = jittered(retry_after_from_response(response, 60))
+                    set_cooldown(pool_id, model, wait_time)
+                    record_attempt(
+                        api_key_id,
+                        model,
+                        status_code=429,
+                        rate_limited=True,
+                        error_message=error_text,
+                        tpm_limit=current_tpm,
+                    )
+                    print(
+                        f"[GROQ 429] {model} key {api_key[-4:]} cooling for "
+                        f"{wait_time:.1f}s."
+                    )
+                    waits.append(wait_time)
+                    break
+
+                if response.status_code in (498, 503):
+                    wait_time = jittered(
+                        retry_after_from_response(
+                            response,
+                            20 if response.status_code == 498 else 45,
+                        )
+                    )
+                    set_cooldown(pool_id, model, wait_time)
+                    record_attempt(
+                        api_key_id,
+                        model,
+                        status_code=response.status_code,
+                        error=True,
+                        error_message=error_text,
+                        tpm_limit=current_tpm,
+                    )
+                    transient_errors.append(error_text)
+                    waits.append(wait_time)
+                    break
+
+                record_attempt(
+                    api_key_id,
+                    model,
+                    status_code=response.status_code,
+                    error=True,
+                    error_message=error_text,
+                    tpm_limit=current_tpm,
+                )
+                permanent_errors.append(
+                    f"{model} returned HTTP {response.status_code}: {error_text[:160]}"
+                )
+                break
+
+    if waits:
+        raise GroqRetryLater(
+            jittered(min(waits)),
+            reason='No Groq key/model quota pool is currently available',
+        )
+    if transient_errors:
+        raise GroqRetryLater(30, reason=transient_errors[-1])
+    if permanent_errors:
+        raise GroqPermanentError('; '.join(permanent_errors[-3:]))
+    raise GroqPermanentError("No usable Groq key/model combinations")
 # Keep fallback signature for compatibility, but route exclusively to Groq
 def call_llm_with_fallback(api_keys: list, prompt: str, max_tokens: int = 4096, proxy: Optional[dict] = None) -> tuple[str, dict]:
     return call_groq_with_fallback(api_keys, prompt, max_tokens, proxy)
@@ -727,7 +867,7 @@ def generate_article_content(h2s: list, api_keys: list, proxy: Optional[dict] = 
     generation_stats = []
     
     # Dynamically scale the length requirement based on the number of headings
-    # to avoid hitting Groq's maximum output token limit (8K) before closing the JSON.
+    # so the JSON closes inside the quota-aware completion budget.
     num_h2s = len(h2s)
     if num_h2s >= 12:
         para_req = "1-2 concise paragraphs"
@@ -796,7 +936,7 @@ CRITICAL INSTRUCTIONS:
 - Ensure the JSON is completely valid and properly closed at the end. Do not exceed typical output length limits before closing the object."""
     
     try:
-        content_json_str, meta = call_llm_with_fallback(api_keys, mega_prompt, max_tokens=8000, proxy=proxy)
+        content_json_str, meta = call_llm_with_fallback(api_keys, mega_prompt, max_tokens=ARTICLE_MAX_TOKENS, proxy=proxy)
         meta['step'] = 'mega_prompt'
         generation_stats.append(meta)
         

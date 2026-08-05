@@ -58,6 +58,33 @@
     </div>
 </div>
 
+<!-- Groq throughput — one operational strip, not another KPI grid -->
+<section class="mb-4" style="padding: 18px 20px; border-top: 1px solid rgba(74,222,128,0.22); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.025);">
+    <div style="display: flex; justify-content: space-between; gap: 24px; align-items: center; flex-wrap: wrap;">
+        <div style="min-width: 260px; flex: 1;">
+            <div style="display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px;">
+                <div>
+                    <strong style="display: block;">Groq throughput today</strong>
+                    <span class="text-muted small">{{ groq_health.tokens }} / {{ groq_health.capacity }} tokens</span>
+                </div>
+                <strong style="color: {% if groq_health.usage_pct >= 90 %}#ff6b6b{% elif groq_health.usage_pct >= 70 %}var(--warning){% else %}#4ade80{% endif %};">
+                    {{ groq_health.usage_pct }}%
+                </strong>
+            </div>
+            <div style="height: 8px; border-radius: 999px; overflow: hidden; background: rgba(255,255,255,0.09);">
+                <div style="height: 100%; width: {{ groq_health.usage_pct }}%; max-width: 100%; border-radius: inherit; transition: width .35s ease; background: {% if groq_health.usage_pct >= 90 %}#ff6b6b{% elif groq_health.usage_pct >= 70 %}var(--warning){% else %}#4ade80{% endif %};"></div>
+            </div>
+        </div>
+        <div style="display: flex; gap: 28px; flex-wrap: wrap; font-size: 13px;">
+            <div><strong style="display: block; font-size: 18px;">{{ groq_health.requests }}</strong><span class="text-muted">Requests</span></div>
+            <div><strong style="display: block; font-size: 18px; color: {% if groq_health.rate_limits %}var(--warning){% else %}inherit{% endif %};">{{ groq_health.rate_limits }}</strong><span class="text-muted">Rate limits</span></div>
+            <div><strong style="display: block; font-size: 18px; color: {% if groq_health.payload_errors %}#ff6b6b{% else %}inherit{% endif %};">{{ groq_health.payload_errors }}</strong><span class="text-muted">Oversized</span></div>
+            <div><strong style="display: block; font-size: 18px;">{{ groq_health.leased_pools }}</strong><span class="text-muted">In flight</span></div>
+            <div><strong style="display: block; font-size: 18px;">{{ groq_health.cooling_pools }}</strong><span class="text-muted">Cooling</span></div>
+        </div>
+    </div>
+</section>
+
 <!-- ============================================================ -->
 <!-- Health Alerts -->
 <!-- ============================================================ -->
@@ -212,6 +239,7 @@
                     <col style="width: 110px;">
                     <col style="width: 100px;">
                     <col style="width: 110px;">
+                    <col style="width: 145px;">
                     <col style="width: 130px;">
                     <col style="width: 110px;">
                     <col style="width: 180px;">
@@ -222,6 +250,7 @@
                         <th>Auto-Pilot</th>
                         <th>Today</th>
                         <th>Total</th>
+                        <th>Groq Today</th>
                         <th>Last Run</th>
                         <th>Next Cycle</th>
                         <th style="text-align: center;">14-Day Output</th>
@@ -249,6 +278,18 @@
                             {{ row.today_published }}
                         </td>
                         <td>{{ row.total_published }}</td>
+                        <td>
+                            <div style="display: flex; justify-content: space-between; gap: 6px; font-size: 11px;">
+                                <span>{{ row.groq_quota_pct }}%</span>
+                                <span class="text-muted">{{ row.groq_requests }} req</span>
+                            </div>
+                            <div style="height: 4px; margin: 4px 0; border-radius: 999px; overflow: hidden; background: rgba(255,255,255,0.09);">
+                                <div style="height: 100%; width: {{ row.groq_quota_pct }}%; max-width: 100%; background: {% if row.groq_quota_pct >= 90 %}#ff6b6b{% elif row.groq_quota_pct >= 70 %}var(--warning){% else %}#4ade80{% endif %};"></div>
+                            </div>
+                            {% if row.groq_rate_limits or row.groq_payload_errors %}
+                            <span style="font-size: 10px; color: var(--warning);">{{ row.groq_rate_limits }} limited · {{ row.groq_payload_errors }} oversized</span>
+                            {% endif %}
+                        </td>
                         <td class="text-muted small">
                             {% if row.last_run %}
                             <span class="badge {% if row.last_run.status == 'running' %}badge-success{% elif row.last_run.status == 'completed' %}badge-info{% elif row.last_run.status == 'failed' %}badge-error{% elif row.last_run.status == 'paused' %}badge-warning{% else %}badge-secondary{% endif %}">

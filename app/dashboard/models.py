@@ -70,6 +70,41 @@ class APIKey(models.Model):
         return f"{self.site.domain} - {self.get_provider_display()}"
 
 
+class GroqUsage(models.Model):
+    """Persistent daily Groq usage and error counters per API key/model."""
+
+    api_key = models.ForeignKey(APIKey, on_delete=models.CASCADE, related_name='groq_usage')
+    model_name = models.CharField(max_length=100)
+    usage_date = models.DateField()
+    request_count = models.PositiveIntegerField(default=0)
+    prompt_tokens = models.PositiveBigIntegerField(default=0)
+    completion_tokens = models.PositiveBigIntegerField(default=0)
+    total_tokens = models.PositiveBigIntegerField(default=0)
+    rate_limit_count = models.PositiveIntegerField(default=0)
+    payload_too_large_count = models.PositiveIntegerField(default=0)
+    error_count = models.PositiveIntegerField(default=0)
+    last_status_code = models.PositiveIntegerField(default=0)
+    last_error = models.CharField(max_length=500, blank=True)
+    tpm_limit = models.PositiveIntegerField(default=0)
+    tpd_limit = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-usage_date', 'api_key_id', 'model_name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['api_key', 'model_name', 'usage_date'],
+                name='unique_groq_usage_key_model_day',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['usage_date', 'api_key'], name='groq_usage_day_key_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.api_key_id} {self.model_name} {self.usage_date}: {self.total_tokens}"
+
+
 class ProxySettings(models.Model):
     """Proxy configuration per site."""
     PROXY_TYPE_CHOICES = [

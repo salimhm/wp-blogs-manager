@@ -69,8 +69,9 @@ def dashboard_home(request):
     import datetime
     import json
     from django.utils import timezone
-    from .models import SiteAutomation, DailyRun, Article
-    from django.db.models import Count
+    from .models import SiteAutomation, DailyRun, Article, GroqUsage
+    from .groq_quota import daily_token_capacity, live_pool_counts
+    from django.db.models import Count, Sum
 
     now = timezone.now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -86,7 +87,34 @@ def dashboard_home(request):
     articles_today = Article.objects.filter(status='published', published_at__gte=today_start).count()
     articles_week = Article.objects.filter(status='published', published_at__gte=week_start).count()
     total_published = Article.objects.filter(status='published').count()
-    active_keys = APIKey.objects.filter(is_active=True, provider='groq').count()
+    active_key_objects = [
+        key
+        for site in sites
+        for key in site.api_keys.all()
+        if key.is_active and key.provider == 'groq'
+    ]
+    active_keys = len(active_key_objects)
+    usage_by_site = {
+        row['api_key__site_id']: row
+        for row in (
+            GroqUsage.objects
+            .filter(usage_date=timezone.localdate())
+            .values('api_key__site_id')
+            .annotate(
+                tokens=Sum('total_tokens'),
+                requests=Sum('request_count'),
+                rate_limits=Sum('rate_limit_count'),
+                payload_errors=Sum('payload_too_large_count'),
+            )
+        )
+    }
+    groq_tokens_today = sum(row['tokens'] or 0 for row in usage_by_site.values())
+    groq_requests_today = sum(row['requests'] or 0 for row in usage_by_site.values())
+    groq_rate_limits_today = sum(row['rate_limits'] or 0 for row in usage_by_site.values())
+    groq_payload_errors_today = sum(row['payload_errors'] or 0 for row in usage_by_site.values())
+    groq_token_capacity = daily_token_capacity(active_key_objects)
+    cooling_pools, leased_pools = live_pool_counts(active_key_objects)
+    groq_usage_pct = round((groq_tokens_today / groq_token_capacity) * 100, 1) if groq_token_capacity else 0
 
     # ── Running and resumable runs ───────────────────────────────────────────
     running_runs_qs = list(DailyRun.objects.filter(status='running').select_related('site', 'keyword_list'))
@@ -188,8 +216,18 @@ def dashboard_home(request):
             else:
                 next_cycle_str = "Due now"
 
-        # Key count from prefetch_related — no extra query
-        key_count = sum(1 for k in site.api_keys.all() if k.is_active and k.provider == 'groq')
+        # Key count and quota capacity from prefetched data — no extra query.
+        site_keys = [
+            key for key in site.api_keys.all()
+            if key.is_active and key.provider == 'groq'
+        ]
+        key_count = len(site_keys)
+        site_usage = usage_by_site.get(site.id, {})
+        site_token_capacity = daily_token_capacity(site_keys)
+        site_tokens = site_usage.get('tokens') or 0
+        site_quota_pct = round(
+            (site_tokens / site_token_capacity) * 100, 1
+        ) if site_token_capacity else 0
 
         alerts = []
         if automation and automation.is_enabled and key_count == 0:
@@ -212,6 +250,12 @@ def dashboard_home(request):
             'key_count': key_count,
             'alerts': alerts,
             'next_cycle': next_cycle_str,
+            'groq_tokens': site_tokens,
+            'groq_capacity': site_token_capacity,
+            'groq_quota_pct': site_quota_pct,
+            'groq_requests': site_usage.get('requests') or 0,
+            'groq_rate_limits': site_usage.get('rate_limits') or 0,
+            'groq_payload_errors': site_usage.get('payload_errors') or 0,
         })
 
     all_alerts = [(row['site'], row['alerts']) for row in sites_data if row['alerts']]
@@ -227,6 +271,16 @@ def dashboard_home(request):
         'total_published': total_published,
         'paused_runs': paused_runs,
         'active_keys': active_keys,
+        'groq_health': {
+            'tokens': groq_tokens_today,
+            'capacity': groq_token_capacity,
+            'usage_pct': groq_usage_pct,
+            'requests': groq_requests_today,
+            'rate_limits': groq_rate_limits_today,
+            'payload_errors': groq_payload_errors_today,
+            'cooling_pools': cooling_pools,
+            'leased_pools': leased_pools,
+        },
     }
     return render(request, 'dashboard/dashboard.html', context)
 
