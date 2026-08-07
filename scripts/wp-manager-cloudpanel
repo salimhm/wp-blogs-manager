@@ -42,7 +42,9 @@ def run(args, *, user=None, check=True):
     )
     if check and completed.returncode != 0:
         error = completed.stderr.strip() or completed.stdout.strip() or 'command failed'
-        raise ProvisionError(error[-1200:])
+        if len(error) > 1200:
+            error = f'{error[:700]}\n... output shortened ...\n{error[-450:]}'
+        raise ProvisionError(error)
     return completed
 
 
@@ -163,9 +165,11 @@ def provision(payload):
                 f'--admin_email={admin_email}',
                 '--skip-email',
             ], user=site_user)
+        # CloudPanel uses Nginx; a soft flush updates WordPress rewrite rules.
+        # --hard targets Apache .htaccess and can fail on an Nginx-only site.
         run([
             'wp', 'rewrite', 'structure', '/%postname%/',
-            f'--path={document_root}', '--hard',
+            f'--path={document_root}',
         ], user=site_user)
         state['wordpress_installed'] = True
         save_state(state_path, state)
