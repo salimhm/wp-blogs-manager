@@ -15,7 +15,9 @@ from pathlib import Path
 
 STATE_DIR = Path('/var/lib/wp-manager-provisioning')
 DOMAIN_RE = re.compile(r'^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$')
-NAME_RE = re.compile(r'^[a-z][a-z0-9_]{2,31}$')
+SITE_USER_RE = re.compile(r'^[a-z][a-z0-9]{2,31}$')
+DATABASE_NAME_RE = re.compile(r'^[a-z][a-z0-9-]{2,31}$')
+DATABASE_USER_RE = re.compile(r'^[a-z][a-z0-9]{2,31}$')
 
 
 class ProvisionError(RuntimeError):
@@ -70,8 +72,13 @@ def validate_payload(payload):
     domain = require(payload, 'domain').lower()
     if not DOMAIN_RE.fullmatch(domain):
         raise ProvisionError('Invalid domain name')
-    for field in ('site_user', 'database_name', 'database_user'):
-        if not NAME_RE.fullmatch(require(payload, field)):
+    validators = {
+        'site_user': SITE_USER_RE,
+        'database_name': DATABASE_NAME_RE,
+        'database_user': DATABASE_USER_RE,
+    }
+    for field, validator in validators.items():
+        if not validator.fullmatch(require(payload, field)):
             raise ProvisionError(f'Invalid {field}')
     admin_email = require(payload, 'admin_email')
     if '@' not in admin_email or len(admin_email) > 254:

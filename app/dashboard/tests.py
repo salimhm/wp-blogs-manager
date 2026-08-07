@@ -382,6 +382,8 @@ class ProvisioningFlowTests(TestCase):
         job = WordPressProvisionJob.objects.select_related('site').get()
         self.assertEqual(job.site.domain, 'newsite.example')
         self.assertEqual(job.celery_task_id, 'celery-job')
+        self.assertRegex(job.database_name, r'^[a-z][a-z0-9-]{2,31}$')
+        self.assertRegex(job.database_user, r'^[a-z][a-z0-9]{2,31}$')
         self.assertNotEqual(job.encrypted_admin_password, job.site.wp_password)
         self.assertEqual(decrypt_secret(job.encrypted_admin_password), job.site.wp_password)
 
@@ -435,6 +437,11 @@ class ProvisioningFlowTests(TestCase):
         self.assertEqual(result, 'ready.example is ready')
         self.assertEqual(job.status, 'ready')
         self.assertEqual(job.progress, 100)
+        self.assertEqual(job.database_name, 'wp-ready')
+        self.assertEqual(job.database_user, 'wpready')
+        payload = _provision.call_args.args[0]
+        self.assertEqual(payload['database_name'], 'wp-ready')
+        self.assertEqual(payload['database_user'], 'wpready')
         self.assertTrue(site.is_verified)
         self.assertEqual(site.wp_app_password, 'generated-app-password')
         self.assertEqual(set_proxied.call_count, 2)

@@ -837,8 +837,8 @@ def provision_cloudflare_zone(request, zone_id):
     compact = re.sub(r'[^a-z0-9]', '', domain)[:18] or 'site'
     suffix = secrets.token_hex(2)
     site_user = f'wp{compact}{suffix}'[:32]
-    database_name = f'wp_{compact}_{suffix}'[:32]
-    database_user = f'wp_{compact}_{suffix}'[:32]
+    database_name = f'wp-{compact}-{suffix}'[:32]
+    database_user = f'wp{compact}{suffix}'[:32]
     admin_password = generate_secure_password(24)
     site_user_password = generate_secure_password(24)
     database_password = generate_secure_password(24)

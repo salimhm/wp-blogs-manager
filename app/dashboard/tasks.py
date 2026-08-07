@@ -652,6 +652,30 @@ def check_site_automations():
     return f"Triggered {triggered_count} automations"
 
 
+
+def _normalize_cloudpanel_database_identifiers(job):
+    """Upgrade identifiers created before CloudPanel-compatible validation."""
+    import re
+
+    database_name = re.sub(r'[^a-z0-9-]+', '-', job.database_name.lower()).strip('-')
+    database_user = re.sub(r'[^a-z0-9]+', '', job.database_user.lower())
+    database_name = database_name[:32]
+    database_user = database_user[:32]
+    if not database_name or not database_name[0].isalpha():
+        database_name = f'wp-{database_name}'[:32]
+    if not database_user or not database_user[0].isalpha():
+        database_user = f'wp{database_user}'[:32]
+    changed = []
+    if job.database_name != database_name:
+        job.database_name = database_name
+        changed.append('database_name')
+    if job.database_user != database_user:
+        job.database_user = database_user
+        changed.append('database_user')
+    if changed:
+        job.save(update_fields=[*changed, 'updated_at'])
+
+
 def _set_provision_step(job, status, step, progress, error=''):
     job.status = status
     job.current_step = step
@@ -729,6 +753,7 @@ def provision_wordpress_site(self, job_id):
         ])
 
         _set_provision_step(job, 'cloudpanel', 'CloudPanel is installing WordPress', 45)
+        _normalize_cloudpanel_database_identifiers(job)
         response = CloudPanelClient().provision({
             'action': 'provision',
             'domain': domain,
