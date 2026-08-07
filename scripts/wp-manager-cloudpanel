@@ -165,10 +165,15 @@ def provision(payload):
                 f'--admin_email={admin_email}',
                 '--skip-email',
             ], user=site_user)
-        # CloudPanel uses Nginx; a soft flush updates WordPress rewrite rules.
-        # --hard targets Apache .htaccess and can fail on an Nginx-only site.
+        # `wp rewrite structure` launches another WP-CLI process via
+        # proc_open. CloudPanel blocks nested processes for site users, so perform
+        # the equivalent option update and soft flush as two top-level commands.
         run([
-            'wp', 'rewrite', 'structure', '/%postname%/',
+            'wp', 'option', 'update', 'permalink_structure', '/%postname%/',
+            f'--path={document_root}',
+        ], user=site_user)
+        run([
+            'wp', 'rewrite', 'flush',
             f'--path={document_root}',
         ], user=site_user)
         state['wordpress_installed'] = True
