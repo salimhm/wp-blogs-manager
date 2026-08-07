@@ -171,6 +171,10 @@ class GroqUsageTests(TestCase):
             tpm_limit=8000,
         )
 
+        key.refresh_from_db()
+        self.assertFalse(key.is_flagged)
+        self.assertEqual(key.flag_reason, '')
+
         usage = GroqUsage.objects.get(
             api_key=key,
             model_name='openai/gpt-oss-20b',
