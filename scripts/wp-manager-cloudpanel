@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Root-owned, stdin-only CloudPanel provisioning wrapper.
+
+Install as /usr/local/sbin/wp-manager-cloudpanel and allow the dedicated SSH
+user to sudo only this command. It never accepts shell command text.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+STATE_DIR = Path('/var/lib/wp-manager-provisioning')
+DOMAIN_RE = re.compile(r'^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$')
+NAME_RE = re.compile(r'^[a-z][a-z0-9_]{2,31}$')
+
+
+class ProvisionError(RuntimeError):
+    pass
+
+
+def emit(payload, exit_code=0):
+    print(json.dumps(payload, separators=(',', ':')))
+    raise SystemExit(exit_code)
+
+
+def run(args, *, user=None, check=True):
+    command = list(args)
+    if user:
+        command = ['runuser', '-u', user, '--'] + command
+    completed = subprocess.run(
+        command,
+        text=True,
+        capture_output=True,
+        timeout=600,
+        check=False,
+    )
+    if check and completed.returncode != 0:
+        error = completed.stderr.strip() or completed.stdout.strip() or 'command failed'
+        raise ProvisionError(error[-1200:])
+    return completed
+
+
+def load_state(domain):
+    STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = STATE_DIR / f'{domain}.json'
+    if not path.exists():
+        return path, {}
+    return path, json.loads(path.read_text(encoding='utf-8'))
+
+
+def save_state(path, state):
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(state), encoding='utf-8')
+    os.chmod(temporary, 0o600)
+    temporary.replace(path)
+
+
+def require(payload, name):
+    value = str(payload.get(name) or '').strip()
+    if not value:
+        raise ProvisionError(f'Missing required field: {name}')
+    return value
+
+
+def validate_payload(payload):
+    domain = require(payload, 'domain').lower()
+    if not DOMAIN_RE.fullmatch(domain):
+        raise ProvisionError('Invalid domain name')
+    for field in ('site_user', 'database_name', 'database_user'):
+        if not NAME_RE.fullmatch(require(payload, field)):
+            raise ProvisionError(f'Invalid {field}')
+    admin_email = require(payload, 'admin_email')
+    if '@' not in admin_email or len(admin_email) > 254:
+        raise ProvisionError('Invalid admin_email')
+    return domain
+
+
+def provision(payload):
+    if os.geteuid() != 0:
+        raise ProvisionError('Provisioner must run as root')
+
+    domain = validate_payload(payload)
+    site_user = payload['site_user']
+    database_name = payload['database_name']
+    database_user = payload['database_user']
+    site_password = require(payload, 'site_user_password')
+    database_password = require(payload, 'database_password')
+    admin_user = require(payload, 'admin_user')
+    admin_password = require(payload, 'admin_password')
+    site_title = require(payload, 'site_title')
+    admin_email = require(payload, 'admin_email')
+    php_version = require(payload, 'php_version')
+    vhost_template = require(payload, 'vhost_template')
+    document_root = Path(require(payload, 'document_root'))
+    expected_root = Path(f'/home/{site_user}/htdocs/{domain}')
+    if document_root != expected_root and expected_root not in document_root.parents:
+        raise ProvisionError('document_root must stay inside the site directory')
+
+    state_path, state = load_state(domain)
+
+    if not state.get('site_created'):
+        run([
+            'clpctl', 'site:add:php',
+            f'--domainName={domain}',
+            f'--phpVersion={php_version}',
+            f'--vhostTemplate={vhost_template}',
+            f'--siteUser={site_user}',
+            f'--siteUserPassword={site_password}',
+        ])
+        state['site_created'] = True
+        save_state(state_path, state)
+
+    if not state.get('database_created'):
+        run([
+            'clpctl', 'db:add',
+            f'--domainName={domain}',
+            f'--databaseName={database_name}',
+            f'--databaseUserName={database_user}',
+            f'--databaseUserPassword={database_password}',
+        ])
+        state['database_created'] = True
+        save_state(state_path, state)
+
+    if not state.get('wordpress_installed'):
+        document_root.mkdir(mode=0o750, parents=True, exist_ok=True)
+        run(['chown', '-R', f'{site_user}:{site_user}', str(document_root)])
+        if not (document_root / 'wp-load.php').exists():
+            run(['wp', 'core', 'download', f'--path={document_root}', '--force'], user=site_user)
+        if not (document_root / 'wp-config.php').exists():
+            run([
+                'wp', 'config', 'create',
+                f'--path={document_root}',
+                f'--dbname={database_name}',
+                f'--dbuser={database_user}',
+                f'--dbpass={database_password}',
+                '--dbhost=localhost',
+                '--skip-check',
+            ], user=site_user)
+        installed = run(
+            ['wp', 'core', 'is-installed', f'--path={document_root}'],
+            user=site_user,
+            check=False,
+        )
+        if installed.returncode != 0:
+            run([
+                'wp', 'core', 'install',
+                f'--path={document_root}',
+                f'--url=https://{domain}',
+                f'--title={site_title}',
+                f'--admin_user={admin_user}',
+                f'--admin_password={admin_password}',
+                f'--admin_email={admin_email}',
+                '--skip-email',
+            ], user=site_user)
+        run([
+            'wp', 'rewrite', 'structure', '/%postname%/',
+            f'--path={document_root}', '--hard',
+        ], user=site_user)
+        state['wordpress_installed'] = True
+        save_state(state_path, state)
+
+    if not state.get('application_password'):
+        application_password = run([
+            'wp', 'user', 'application-password', 'create',
+            admin_user, 'wp-blogs-manager', '--porcelain',
+            f'--path={document_root}',
+        ], user=site_user).stdout.strip()
+        if not application_password:
+            raise ProvisionError('WP-CLI returned an empty application password')
+        state['application_password'] = application_password
+        save_state(state_path, state)
+
+    if not state.get('certificate_installed'):
+        run([
+            'clpctl', 'lets-encrypt:install:certificate',
+            f'--domainName={domain}',
+        ])
+        state['certificate_installed'] = True
+        save_state(state_path, state)
+
+    return {
+        'success': True,
+        'domain': domain,
+        'application_password': state['application_password'],
+    }
+
+
+def main():
+    try:
+        payload = json.load(sys.stdin)
+        if payload.get('action') != 'provision':
+            raise ProvisionError('Unsupported action')
+        emit(provision(payload))
+    except (ProvisionError, json.JSONDecodeError, OSError) as exc:
+        emit({'success': False, 'error': str(exc)[:1200]}, exit_code=1)
+
+
+if __name__ == '__main__':
+    main()

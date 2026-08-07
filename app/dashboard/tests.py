@@ -289,3 +289,152 @@ class RunCancellationTests(TestCase):
         self.assertEqual(DailyRun.objects.filter(site=self.site).count(), 1)
         self.assertTrue(DailyRun.objects.filter(id=existing_run.id).exists())
         delay.assert_not_called()
+
+
+class ProvisioningUnitTests(SimpleTestCase):
+    def test_provisioning_secrets_round_trip_without_plaintext(self):
+        from .secret_store import decrypt_secret, encrypt_secret
+
+        with patch.dict('os.environ', {'PROVISIONING_ENCRYPTION_KEY': ''}):
+            encrypted = encrypt_secret('correct horse battery staple')
+            self.assertNotIn('correct horse', encrypted)
+            self.assertEqual(decrypt_secret(encrypted), 'correct horse battery staple')
+
+    @patch('dashboard.cloudpanel.os.path.isfile', return_value=True)
+    @patch('dashboard.cloudpanel.subprocess.run')
+    def test_cloudpanel_client_sends_secrets_on_stdin_only(self, run, _isfile):
+        from .cloudpanel import CloudPanelClient
+
+        run.return_value = SimpleNamespace(
+            returncode=0,
+            stdout='{"success":true,"application_password":"app-pass"}\n',
+            stderr='',
+        )
+        payload = {'action': 'provision', 'admin_password': 'very-secret'}
+        response = CloudPanelClient().provision(payload)
+
+        command = run.call_args.args[0]
+        self.assertEqual(response['application_password'], 'app-pass')
+        self.assertNotIn('very-secret', ' '.join(command))
+        self.assertIn('very-secret', run.call_args.kwargs['input'])
+        self.assertIn('StrictHostKeyChecking=yes', command)
+
+    @patch('dashboard.utils.requests.post')
+    @patch('dashboard.utils.requests.get')
+    def test_dns_upsert_creates_an_exact_record(self, get, post):
+        from .utils import upsert_cloudflare_dns_record
+
+        get.return_value.json.return_value = {'success': True, 'result': []}
+        post.return_value.json.return_value = {
+            'success': True,
+            'result': {'id': 'dns-record'},
+        }
+        record_id = upsert_cloudflare_dns_record(
+            'token', 'zone', 'example.com', 'A', '203.0.113.10'
+        )
+
+        self.assertEqual(record_id, 'dns-record')
+        self.assertFalse(post.call_args.kwargs['json']['proxied'])
+        self.assertEqual(get.call_args.kwargs['params']['name'], 'example.com')
+
+    @patch('dashboard.utils.requests.get')
+    def test_dns_upsert_refuses_incompatible_records(self, get):
+        from .utils import CloudflareAPIError, upsert_cloudflare_dns_record
+
+        get.return_value.json.return_value = {
+            'success': True,
+            'result': [{'id': 'old', 'type': 'CNAME'}],
+        }
+        with self.assertRaisesRegex(CloudflareAPIError, 'incompatible CNAME'):
+            upsert_cloudflare_dns_record(
+                'token', 'zone', 'example.com', 'A', '203.0.113.10'
+            )
+
+
+class ProvisioningFlowTests(TestCase):
+    def setUp(self):
+        from .models import CloudflareSettings
+
+        self.cloudflare = CloudflareSettings.objects.create(api_token='cf-token')
+
+    @patch('dashboard.tasks.provision_wordpress_site.delay')
+    @patch('dashboard.views.get_cloudflare_zones')
+    def test_active_zone_creates_one_durable_job(self, zones, delay):
+        from django.test import RequestFactory, override_settings
+        from .models import WordPressProvisionJob
+        from .secret_store import decrypt_secret
+        from .views import provision_cloudflare_zone
+
+        zones.return_value = (
+            True,
+            [{'id': 'zone-1', 'name': 'newsite.example', 'status': 'active', 'paused': False}],
+        )
+        delay.return_value = SimpleNamespace(id='celery-job')
+        request = RequestFactory().post('/provision/')
+
+        with override_settings(
+            CLOUDPANEL_ORIGIN_IP='203.0.113.10',
+            CLOUDPANEL_ADMIN_EMAIL='owner@example.com',
+        ):
+            response = provision_cloudflare_zone(request, 'zone-1')
+
+        self.assertEqual(response.status_code, 202)
+        job = WordPressProvisionJob.objects.select_related('site').get()
+        self.assertEqual(job.site.domain, 'newsite.example')
+        self.assertEqual(job.celery_task_id, 'celery-job')
+        self.assertNotEqual(job.encrypted_admin_password, job.site.wp_password)
+        self.assertEqual(decrypt_secret(job.encrypted_admin_password), job.site.wp_password)
+
+    @patch('dashboard.utils.verify_wp_credentials', return_value=(True, 'ok'))
+    @patch('dashboard.utils.set_cloudflare_record_proxied')
+    @patch('dashboard.utils.upsert_cloudflare_dns_record', side_effect=['apex-id', 'www-id'])
+    @patch('dashboard.cloudpanel.CloudPanelClient.provision', return_value={
+        'success': True,
+        'application_password': 'generated-app-password',
+    })
+    def test_provision_task_reaches_ready(
+        self,
+        _provision,
+        _upsert,
+        set_proxied,
+        _verify,
+    ):
+        from django.test import override_settings
+        from .models import WordPressProvisionJob
+        from .secret_store import encrypt_secret
+        from .tasks import provision_wordpress_site
+
+        site = Site.objects.create(
+            domain='ready.example',
+            wp_username='ready_admin',
+            wp_password='admin-secret',
+            wp_admin_email='owner@example.com',
+        )
+        job = WordPressProvisionJob.objects.create(
+            site=site,
+            cloudflare_zone_id='ready-zone',
+            site_title='Ready',
+            site_user='wpready',
+            database_name='wp_ready',
+            database_user='wp_ready',
+            encrypted_site_user_password=encrypt_secret('site-secret'),
+            encrypted_database_password=encrypt_secret('db-secret'),
+            encrypted_admin_password=encrypt_secret('admin-secret'),
+        )
+
+        with override_settings(
+            CLOUDPANEL_ORIGIN_IP='203.0.113.10',
+            CLOUDPANEL_PHP_VERSION='8.3',
+            CLOUDPANEL_VHOST_TEMPLATE='WordPress',
+            CLOUDPANEL_DOCUMENT_ROOT_TEMPLATE='/home/{site_user}/htdocs/{domain}',
+        ):
+            result = provision_wordpress_site.run(job.id)
+
+        job.refresh_from_db()
+        site.refresh_from_db()
+        self.assertEqual(result, 'ready.example is ready')
+        self.assertEqual(job.status, 'ready')
+        self.assertEqual(job.progress, 100)
+        self.assertTrue(site.is_verified)
+        self.assertEqual(site.wp_app_password, 'generated-app-password')
+        self.assertEqual(set_proxied.call_count, 2)

@@ -425,6 +425,98 @@ def create_cloudflare_dns_record(
         return False, f"Error: {str(e)}"
 
 
+class CloudflareAPIError(RuntimeError):
+    pass
+
+
+def _cloudflare_error(result, fallback):
+    errors = result.get('errors') or []
+    if errors:
+        return errors[0].get('message') or fallback
+    return fallback
+
+
+def upsert_cloudflare_dns_record(
+    api_token,
+    zone_id,
+    name,
+    record_type,
+    content,
+    *,
+    proxied=False,
+):
+    """Create or update one exact DNS record, refusing type collisions."""
+    url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records"
+    headers = {
+        'Authorization': f'Bearer {api_token}',
+        'Content-Type': 'application/json',
+    }
+    try:
+        lookup = requests.get(
+            url,
+            headers=headers,
+            params={'name': name, 'per_page': 100},
+            timeout=15,
+        )
+        lookup_result = lookup.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise CloudflareAPIError(f'Could not inspect DNS for {name}: {exc}') from exc
+    if not lookup_result.get('success'):
+        raise CloudflareAPIError(_cloudflare_error(lookup_result, 'DNS lookup failed'))
+
+    matches = lookup_result.get('result') or []
+    incompatible = [record for record in matches if record.get('type') != record_type]
+    if incompatible:
+        types = ', '.join(sorted({record.get('type', '?') for record in incompatible}))
+        raise CloudflareAPIError(
+            f'{name} already has an incompatible {types} record; review it in Cloudflare first'
+        )
+
+    payload = {
+        'type': record_type,
+        'name': name,
+        'content': content,
+        'ttl': 1,
+        'proxied': bool(proxied),
+        'comment': 'Managed by WP Manager CloudPanel provisioner',
+    }
+    existing = matches[0] if matches else None
+    try:
+        if existing:
+            endpoint = f"{url}/{existing['id']}"
+            response = requests.patch(endpoint, headers=headers, json=payload, timeout=15)
+        else:
+            response = requests.post(url, headers=headers, json=payload, timeout=15)
+        result = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise CloudflareAPIError(f'Could not update DNS for {name}: {exc}') from exc
+    if not result.get('success'):
+        raise CloudflareAPIError(_cloudflare_error(result, 'DNS update failed'))
+    return result['result']['id']
+
+
+def set_cloudflare_record_proxied(api_token, zone_id, record_id, proxied=True):
+    url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}"
+    headers = {
+        'Authorization': f'Bearer {api_token}',
+        'Content-Type': 'application/json',
+    }
+    try:
+        current_response = requests.get(url, headers=headers, timeout=15)
+        current = current_response.json()
+        if not current.get('success'):
+            raise CloudflareAPIError(_cloudflare_error(current, 'DNS record lookup failed'))
+        payload = {key: current['result'][key] for key in ('type', 'name', 'content', 'ttl')}
+        payload['proxied'] = bool(proxied)
+        updated_response = requests.patch(url, headers=headers, json=payload, timeout=15)
+        updated = updated_response.json()
+    except (requests.RequestException, ValueError, KeyError) as exc:
+        raise CloudflareAPIError(f'Could not enable Cloudflare proxy: {exc}') from exc
+    if not updated.get('success'):
+        raise CloudflareAPIError(_cloudflare_error(updated, 'Could not enable proxy'))
+    return updated['result']
+
+
 def get_cloudflare_zones(api_token: str) -> Tuple[bool, list]:
     """
     Get list of zones from Cloudflare account.
@@ -454,7 +546,15 @@ def get_cloudflare_zones(api_token: str) -> Tuple[bool, list]:
                     return True, all_zones
                 return False, []
             
-            zones = [{'id': z['id'], 'name': z['name']} for z in result.get('result', [])]
+            zones = [
+                {
+                    'id': zone['id'],
+                    'name': zone['name'],
+                    'status': zone.get('status', 'unknown'),
+                    'paused': zone.get('paused', False),
+                }
+                for zone in result.get('result', [])
+            ]
             all_zones.extend(zones)
             
             # Check if there are more pages

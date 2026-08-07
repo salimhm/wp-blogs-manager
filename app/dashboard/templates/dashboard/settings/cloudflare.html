@@ -1,102 +1,203 @@
 {% extends 'dashboard/base.html' %}
 
-{% block page_title %}Cloudflare Settings{% endblock %}
+{% block page_title %}Cloudflare & WordPress{% endblock %}
 
 {% block content %}
-<div class="card">
-    <div class="card-header">
-        <h2 class="card-title">Cloudflare API Configuration</h2>
-        <button type="button" class="btn btn-secondary" onclick="testConnection()">Test Connection</button>
+<section class="cf-connection">
+    <div>
+        <h2>Cloudflare connection</h2>
+        <p>Choose an active domain below and WordPress will be installed through CloudPanel.</p>
     </div>
+    <button type="button" class="btn btn-secondary" onclick="testConnection()">Test connection</button>
+</section>
+
+<div class="card cf-settings-card">
     <div class="card-body">
-        <form method="post">
+        <form method="post" class="cf-settings-form">
             {% csrf_token %}
             <div class="form-group">
                 <label class="form-label">API Token</label>
-                <input 
-                    type="password" 
-                    name="api_token" 
-                    class="form-input" 
-                    value="{{ cloudflare.api_token|default:'' }}"
-                    placeholder="Enter your Cloudflare API token"
-                    required
-                >
-                <span class="form-hint">Create at Cloudflare Dashboard → My Profile → API Tokens → Create Token → "Edit zone DNS"</span>
+                <input type="password" name="api_token" class="form-input" placeholder="{% if cloudflare.api_token %}Token saved — enter a new token to replace it{% else %}Cloudflare API token{% endif %}">
+                <span class="form-hint">Requires Zone Read and DNS Write permissions.</span>
             </div>
             <div class="form-group">
                 <label class="form-label">Default Zone ID</label>
-                <input 
-                    type="text" 
-                    name="default_zone_id" 
-                    class="form-input" 
-                    value="{{ cloudflare.default_zone_id|default:'' }}"
-                    placeholder="32-character zone ID"
-                >
-                <span class="form-hint">Found in Cloudflare Dashboard → Select Domain → Overview (right sidebar)</span>
+                <input type="text" name="default_zone_id" class="form-input" value="{{ cloudflare.default_zone_id|default:'' }}" placeholder="Optional">
             </div>
-            
-            {% if zones %}
-            <div class="form-group">
-                <label class="form-label">Available Zones</label>
-                <div class="zones-list">
-                    {% for zone in zones %}
-                    <div class="zone-item" style="display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #eee;">
-                        <div class="zone-info">
-                            <span class="zone-name" style="font-weight: 500; display: block;">{{ zone.name }}</span>
-                            <code class="zone-id" style="color: #666; font-size: 0.85em;">{{ zone.id }}</code>
-                        </div>
-                        {% if zone.is_added %}
-                            <span class="badge badge-success" style="color: #10B981; font-weight: 500;">
-                                <span style="margin-right: 4px;">✓</span> Added
-                            </span>
-                        {% else %}
-                            <a href="{% url 'dashboard:add_site' %}?domain={{ zone.name }}" class="btn btn-sm btn-primary">Add Site</a>
-                        {% endif %}
-                    </div>
-                    {% endfor %}
-                </div>
-            </div>
-            {% endif %}
-            
-            <div class="form-actions">
-                <a href="{% url 'dashboard:settings' %}" class="btn btn-ghost">Cancel</a>
-                <button type="submit" class="btn btn-primary">Save Settings</button>
-            </div>
+            <button type="submit" class="btn btn-primary">Save connection</button>
         </form>
     </div>
 </div>
 
 <div id="testResult" class="alert hidden"></div>
+
+<section class="cf-zones-section">
+    <div class="cf-zones-heading">
+        <div>
+            <h2>Domains</h2>
+            <p>{{ zones|length }} zone{{ zones|length|pluralize }} available from Cloudflare</p>
+        </div>
+        <input id="zoneSearch" class="form-input cf-zone-search" type="search" placeholder="Search domains" oninput="filterZones(this.value)">
+    </div>
+
+    <div class="zones-list cf-zones-list">
+        {% for zone in zones %}
+        <article class="zone-item cf-zone-row" id="zone-{{ zone.id }}" data-domain="{{ zone.name|lower }}" {% if zone.job and zone.job.is_active %}data-job-id="{{ zone.job.id }}"{% endif %}>
+            <div class="zone-info">
+                <div class="cf-domain-line">
+                    <span class="zone-name">{{ zone.name }}</span>
+                    <span class="badge {% if zone.status == 'active' and not zone.paused %}badge-success{% else %}badge-warning{% endif %}">{{ zone.status }}</span>
+                </div>
+                <span class="cf-step" data-role="step">
+                    {% if zone.job %}{{ zone.job.current_step }}{% elif zone.site %}Already managed{% else %}Ready to install{% endif %}
+                </span>
+                <div class="cf-progress {% if not zone.job or zone.job.status == 'ready' or zone.job.status == 'failed' %}hidden{% endif %}" data-role="progress-wrap">
+                    <span data-role="progress-bar" style="width: {{ zone.job.progress|default:0 }}%;"></span>
+                </div>
+                <span class="cf-error {% if not zone.job.last_error %}hidden{% endif %}" data-role="error">{{ zone.job.last_error }}</span>
+            </div>
+            <div class="cf-zone-action" data-role="action">
+                {% if zone.job.status == 'ready' %}
+                    <a href="https://{{ zone.name }}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary">Open site</a>
+                    <a href="https://{{ zone.name }}/wp-admin/" target="_blank" rel="noopener" class="btn btn-sm btn-primary">WP Admin</a>
+                    <a href="{% url "dashboard:site_detail" zone.site.domain %}" class="btn btn-sm btn-secondary">Manage</a>
+                {% elif zone.job.status == 'failed' %}
+                    <button type="button" class="btn btn-sm btn-warning" onclick="retryJob(this, {{ zone.job.id }})">Retry</button>
+                {% elif zone.job %}
+                    <span class="badge badge-info" data-role="status">{{ zone.job.get_status_display }}</span>
+                {% elif zone.site %}
+                    <a href="{% url 'dashboard:site_detail' zone.site.domain %}" class="btn btn-sm btn-secondary">View site</a>
+                {% elif zone.status == 'active' and not zone.paused %}
+                    <button type="button" class="btn btn-sm btn-primary" data-url="{% url 'dashboard:provision_cloudflare_zone' zone.id %}" onclick="provisionZone(this)">Install WordPress</button>
+                {% else %}
+                    <span class="badge badge-warning">Zone unavailable</span>
+                {% endif %}
+            </div>
+        </article>
+        {% empty %}
+        <div class="cf-empty">No Cloudflare zones were returned. Save or test the connection above.</div>
+        {% endfor %}
+    </div>
+</section>
 {% endblock %}
 
 {% block extra_js %}
 <script>
-async function testConnection() {
-    const resultDiv = document.getElementById('testResult');
-    resultDiv.className = 'alert alert-info';
-    resultDiv.textContent = 'Testing connection...';
-    resultDiv.classList.remove('hidden');
-    
-    try {
-        const response = await fetch('{% url "dashboard:test_cloudflare" %}', {
-            method: 'POST',
-            headers: {
-                'X-CSRFToken': '{{ csrf_token }}'
-            }
-        });
-        const data = await response.json();
-        
-        if (data.success) {
-            resultDiv.className = 'alert alert-success';
-            resultDiv.textContent = data.message;
-        } else {
-            resultDiv.className = 'alert alert-error';
-            resultDiv.textContent = data.message;
-        }
-    } catch (error) {
-        resultDiv.className = 'alert alert-error';
-        resultDiv.textContent = 'Network error: ' + error.message;
+const csrfToken = '{{ csrf_token }}';
+const statusTemplate = '{% url "dashboard:wordpress_provision_status" 0 %}';
+const retryTemplate = '{% url "dashboard:retry_wordpress_provision" 0 %}';
+const pollers = new Map();
+
+function filterZones(value) {
+    const needle = value.trim().toLowerCase();
+    document.querySelectorAll('.cf-zone-row').forEach(row => {
+        row.hidden = needle && !row.dataset.domain.includes(needle);
+    });
+}
+
+async function requestJSON(url, options = {}) {
+    const response = await fetch(url, options);
+    const data = await response.json();
+    if (!response.ok || !data.success) throw new Error(data.error || data.message || 'Request failed');
+    return data;
+}
+
+function renderJob(row, job) {
+    row.dataset.jobId = job.id;
+    row.querySelector('[data-role="step"]').textContent = job.step;
+    const error = row.querySelector('[data-role="error"]');
+    error.textContent = job.error || '';
+    error.classList.toggle('hidden', !job.error);
+    const progressWrap = row.querySelector('[data-role="progress-wrap"]');
+    const progressBar = row.querySelector('[data-role="progress-bar"]');
+    progressWrap.classList.toggle('hidden', job.status === 'ready' || job.status === 'failed');
+    progressBar.style.width = `${job.progress}%`;
+    const action = row.querySelector('[data-role="action"]');
+    if (job.status === 'ready') {
+        action.innerHTML = `<a href="${job.site_url}" target="_blank" rel="noopener" class="btn btn-sm btn-secondary">Open site</a><a href="${job.admin_url}" target="_blank" rel="noopener" class="btn btn-sm btn-primary">WP Admin</a><a href="${job.site_detail_url}" class="btn btn-sm btn-secondary">Manage</a>`;
+        stopPolling(job.id);
+    } else if (job.status === 'failed') {
+        action.innerHTML = `<button type="button" class="btn btn-sm btn-warning" onclick="retryJob(this, ${job.id})">Retry</button>`;
+        stopPolling(job.id);
+    } else {
+        action.innerHTML = `<span class="badge badge-info">${job.status_label}</span>`;
+        startPolling(row, job.id);
     }
 }
+
+async function provisionZone(button) {
+    const row = button.closest('.cf-zone-row');
+    button.disabled = true;
+    button.textContent = 'Queuing…';
+    try {
+        const data = await requestJSON(button.dataset.url, {
+            method: 'POST',
+            headers: {'X-CSRFToken': csrfToken},
+        });
+        renderJob(row, data.job);
+    } catch (error) {
+        button.disabled = false;
+        button.textContent = 'Install WordPress';
+        showResult(error.message, false);
+    }
+}
+
+async function retryJob(button, jobId) {
+    const row = button.closest('.cf-zone-row');
+    button.disabled = true;
+    try {
+        const data = await requestJSON(retryTemplate.replace('/0/', `/${jobId}/`), {
+            method: 'POST',
+            headers: {'X-CSRFToken': csrfToken},
+        });
+        renderJob(row, data.job);
+    } catch (error) {
+        button.disabled = false;
+        showResult(error.message, false);
+    }
+}
+
+function startPolling(row, jobId) {
+    if (pollers.has(jobId)) return;
+    const timer = setInterval(async () => {
+        try {
+            const data = await requestJSON(statusTemplate.replace('/0/', `/${jobId}/`));
+            renderJob(row, data.job);
+        } catch (error) {
+            stopPolling(jobId);
+            showResult(error.message, false);
+        }
+    }, 3000);
+    pollers.set(jobId, timer);
+}
+
+function stopPolling(jobId) {
+    if (!pollers.has(jobId)) return;
+    clearInterval(pollers.get(jobId));
+    pollers.delete(jobId);
+}
+
+function showResult(message, success) {
+    const result = document.getElementById('testResult');
+    result.className = `alert ${success ? 'alert-success' : 'alert-error'}`;
+    result.textContent = message;
+}
+
+async function testConnection() {
+    showResult('Testing connection…', true);
+    try {
+        const data = await requestJSON('{% url "dashboard:test_cloudflare" %}', {
+            method: 'POST',
+            headers: {'X-CSRFToken': csrfToken},
+        });
+        showResult(data.message, true);
+    } catch (error) {
+        showResult(error.message, false);
+    }
+}
+
+document.querySelectorAll('.cf-zone-row[data-job-id]').forEach(row => {
+    startPolling(row, Number(row.dataset.jobId));
+});
 </script>
 {% endblock %}

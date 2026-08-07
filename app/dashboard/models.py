@@ -44,6 +44,55 @@ class Site(models.Model):
         return f"{status} {self.domain}"
 
 
+class WordPressProvisionJob(models.Model):
+    """Durable progress and secrets for a CloudPanel WordPress installation."""
+
+    STATUS_CHOICES = [
+        ('queued', 'Queued'),
+        ('dns', 'Configuring DNS'),
+        ('cloudpanel', 'Installing on CloudPanel'),
+        ('proxy', 'Enabling Cloudflare'),
+        ('verifying', 'Verifying WordPress'),
+        ('ready', 'Ready'),
+        ('failed', 'Failed'),
+    ]
+
+    site = models.OneToOneField(
+        Site,
+        on_delete=models.CASCADE,
+        related_name='provision_job',
+    )
+    cloudflare_zone_id = models.CharField(max_length=64, unique=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='queued')
+    current_step = models.CharField(max_length=160, default='Waiting to start')
+    progress = models.PositiveSmallIntegerField(default=0)
+    last_error = models.TextField(blank=True)
+    celery_task_id = models.CharField(max_length=100, blank=True)
+    cloudflare_apex_record_id = models.CharField(max_length=64, blank=True)
+    cloudflare_www_record_id = models.CharField(max_length=64, blank=True)
+    site_title = models.CharField(max_length=255)
+    site_user = models.CharField(max_length=32)
+    database_name = models.CharField(max_length=64)
+    database_user = models.CharField(max_length=64)
+    encrypted_site_user_password = models.TextField()
+    encrypted_database_password = models.TextField()
+    encrypted_admin_password = models.TextField()
+    attempt_count = models.PositiveSmallIntegerField(default=0)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.site.domain}: {self.get_status_display()}"
+
+    @property
+    def is_active(self):
+        return self.status not in {'ready', 'failed'}
+
+
 class APIKey(models.Model):
     """API keys for AI services - multiple per site."""
     PROVIDER_CHOICES = [

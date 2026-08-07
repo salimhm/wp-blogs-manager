@@ -12,3 +12,4 @@ django-celery-results>=2.5.0
 redis>=5.0.0
 PyJWT>=2.8.0
 youtube-search
+cryptography>=42.0.0

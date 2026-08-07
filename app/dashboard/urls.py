@@ -59,6 +59,9 @@ urlpatterns = [
     path('settings/', views.settings_view, name='settings'),
     path('settings/cloudflare/', views.cloudflare_settings, name='cloudflare_settings'),
     path('settings/cloudflare/test/', views.test_cloudflare, name='test_cloudflare'),
+    path('settings/cloudflare/zones/<str:zone_id>/provision/', views.provision_cloudflare_zone, name='provision_cloudflare_zone'),
+    path('settings/cloudflare/provision/<int:job_id>/status/', views.wordpress_provision_status, name='wordpress_provision_status'),
+    path('settings/cloudflare/provision/<int:job_id>/retry/', views.retry_wordpress_provision, name='retry_wordpress_provision'),
     
     # AJAX endpoints
     path('api/validate-credentials/', views.api_validate_credentials, name='api_validate_credentials'),

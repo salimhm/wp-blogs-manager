@@ -456,10 +456,6 @@ def verify_site(request, site_domain):
             'https': active_proxy.get_proxy_url()
         }
 
-    print('site==>', site)
-    print('username==>', site.wp_username)
-    print('password==>', site.wp_password)
-	
     
     # Prioritize Application Password
     password_to_use = site.wp_app_password if site.wp_app_password else site.wp_password
@@ -763,15 +759,157 @@ def cloudflare_settings(request):
     if cloudflare and cloudflare.api_token:
         success, zones = get_cloudflare_zones(cloudflare.api_token)
         
-        # Mark existing sites
-        existing_domains = set(Site.objects.values_list('domain', flat=True))
+        existing_sites = {
+            site.domain: site
+            for site in Site.objects.filter(domain__in=[zone['name'] for zone in zones])
+        }
+        from .models import WordPressProvisionJob
+        jobs = {
+            job.cloudflare_zone_id: job
+            for job in WordPressProvisionJob.objects
+                .filter(cloudflare_zone_id__in=[zone['id'] for zone in zones])
+                .select_related('site')
+        }
         for zone in zones:
-            zone['is_added'] = zone['name'] in existing_domains
+            zone['site'] = existing_sites.get(zone['name'])
+            zone['job'] = jobs.get(zone['id'])
+            zone['is_added'] = zone['site'] is not None
     
     return render(request, 'dashboard/settings/cloudflare.html', {
         'cloudflare': cloudflare,
         'zones': zones
     })
+
+
+def _provision_job_payload(job):
+    return {
+        'id': job.id,
+        'domain': job.site.domain,
+        'status': job.status,
+        'status_label': job.get_status_display(),
+        'step': job.current_step,
+        'progress': job.progress,
+        'error': job.last_error,
+        'site_url': f'https://{job.site.domain}',
+        'admin_url': f'https://{job.site.domain}/wp-admin/',
+        'site_detail_url': (
+            f'/sites/{job.site.domain}/'
+            if job.status == 'ready' else ''
+        ),
+    }
+
+
+@require_http_methods(["POST"])
+def provision_cloudflare_zone(request, zone_id):
+    """Queue one active Cloudflare zone for CloudPanel WordPress installation."""
+    import re
+    import secrets
+    from django.conf import settings
+    from django.db import IntegrityError, transaction
+    from .models import WordPressProvisionJob
+    from .secret_store import encrypt_secret
+    from .tasks import provision_wordpress_site
+
+    cloudflare = CloudflareSettings.objects.filter(is_active=True).first()
+    if not cloudflare or not cloudflare.api_token:
+        return JsonResponse({'success': False, 'error': 'Cloudflare is not configured'}, status=400)
+    if not settings.CLOUDPANEL_ORIGIN_IP:
+        return JsonResponse({'success': False, 'error': 'CLOUDPANEL_ORIGIN_IP is not configured'}, status=400)
+
+    success, zones = get_cloudflare_zones(cloudflare.api_token)
+    zone = next((item for item in zones if item['id'] == zone_id), None) if success else None
+    if not zone:
+        return JsonResponse({'success': False, 'error': 'Cloudflare zone not found'}, status=404)
+    if zone.get('status') != 'active' or zone.get('paused'):
+        return JsonResponse({'success': False, 'error': 'The Cloudflare zone must be active'}, status=409)
+
+    existing_job = WordPressProvisionJob.objects.filter(cloudflare_zone_id=zone_id).select_related('site').first()
+    if existing_job:
+        return JsonResponse({'success': True, 'job': _provision_job_payload(existing_job)}, status=200)
+    if Site.objects.filter(domain=zone['name']).exists():
+        return JsonResponse({'success': False, 'error': 'This domain is already managed'}, status=409)
+
+    admin_email = (request.POST.get('admin_email') or settings.CLOUDPANEL_ADMIN_EMAIL).strip()
+    if not admin_email or '@' not in admin_email:
+        return JsonResponse({'success': False, 'error': 'Configure CLOUDPANEL_ADMIN_EMAIL first'}, status=400)
+
+    domain = zone['name'].lower()
+    compact = re.sub(r'[^a-z0-9]', '', domain)[:18] or 'site'
+    suffix = secrets.token_hex(2)
+    site_user = f'wp{compact}{suffix}'[:32]
+    database_name = f'wp_{compact}_{suffix}'[:32]
+    database_user = f'wp_{compact}_{suffix}'[:32]
+    admin_password = generate_secure_password(24)
+    site_user_password = generate_secure_password(24)
+    database_password = generate_secure_password(24)
+    site_title = (request.POST.get('site_title') or domain.split('.')[0]).strip()[:255]
+
+    try:
+        with transaction.atomic():
+            site = Site.objects.create(
+                domain=domain,
+                wp_username=generate_username(domain),
+                wp_password=admin_password,
+                wp_admin_email=admin_email,
+                cloudflare_zone_id=zone_id,
+                server_ip=settings.CLOUDPANEL_ORIGIN_IP,
+                is_fresh_installation=True,
+                is_verified=False,
+            )
+            job = WordPressProvisionJob.objects.create(
+                site=site,
+                cloudflare_zone_id=zone_id,
+                site_title=site_title,
+                site_user=site_user,
+                database_name=database_name,
+                database_user=database_user,
+                encrypted_site_user_password=encrypt_secret(site_user_password),
+                encrypted_database_password=encrypt_secret(database_password),
+                encrypted_admin_password=encrypt_secret(admin_password),
+            )
+    except IntegrityError:
+        return JsonResponse({'success': False, 'error': 'This domain is already being provisioned'}, status=409)
+
+    try:
+        task = provision_wordpress_site.delay(job.id)
+        job.celery_task_id = task.id
+        job.current_step = 'Queued for installation'
+        job.save(update_fields=['celery_task_id', 'current_step', 'updated_at'])
+    except Exception as exc:
+        job.status = 'failed'
+        job.current_step = 'Could not queue provisioning task'
+        job.last_error = str(exc)[:1000]
+        job.save(update_fields=['status', 'current_step', 'last_error', 'updated_at'])
+        return JsonResponse({'success': False, 'job': _provision_job_payload(job)}, status=503)
+
+    return JsonResponse({'success': True, 'job': _provision_job_payload(job)}, status=202)
+
+
+@require_http_methods(["GET"])
+def wordpress_provision_status(request, job_id):
+    from .models import WordPressProvisionJob
+    job = get_object_or_404(WordPressProvisionJob.objects.select_related('site'), id=job_id)
+    return JsonResponse({'success': True, 'job': _provision_job_payload(job)})
+
+
+@require_http_methods(["POST"])
+def retry_wordpress_provision(request, job_id):
+    from .models import WordPressProvisionJob
+    from .tasks import provision_wordpress_site
+    job = get_object_or_404(WordPressProvisionJob.objects.select_related('site'), id=job_id)
+    if job.status != 'failed':
+        return JsonResponse({'success': False, 'error': 'Only failed jobs can be retried'}, status=409)
+    job.status = 'queued'
+    job.current_step = 'Queued for retry'
+    job.last_error = ''
+    job.completed_at = None
+    task = provision_wordpress_site.delay(job.id)
+    job.celery_task_id = task.id
+    job.save(update_fields=[
+        'status', 'current_step', 'last_error', 'completed_at',
+        'celery_task_id', 'updated_at',
+    ])
+    return JsonResponse({'success': True, 'job': _provision_job_payload(job)}, status=202)
 
 
 @require_http_methods(["POST"])

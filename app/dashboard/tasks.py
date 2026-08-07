@@ -650,3 +650,159 @@ def check_site_automations():
         triggered_count += 1
             
     return f"Triggered {triggered_count} automations"
+
+
+def _set_provision_step(job, status, step, progress, error=''):
+    job.status = status
+    job.current_step = step
+    job.progress = progress
+    job.last_error = error
+    job.save(update_fields=[
+        'status',
+        'current_step',
+        'progress',
+        'last_error',
+        'updated_at',
+    ])
+
+
+@shared_task(bind=True, max_retries=3)
+def provision_wordpress_site(self, job_id):
+    """Provision one Cloudflare zone through the restricted CloudPanel wrapper."""
+    from django.conf import settings
+    from django.utils import timezone
+
+    from .cloudpanel import CloudPanelClient, CloudPanelError
+    from .models import CloudflareSettings, WordPressProvisionJob
+    from .secret_store import decrypt_secret
+    from .utils import (
+        CloudflareAPIError,
+        set_cloudflare_record_proxied,
+        upsert_cloudflare_dns_record,
+        verify_wp_credentials,
+    )
+
+    try:
+        job = WordPressProvisionJob.objects.select_related('site').get(id=job_id)
+    except WordPressProvisionJob.DoesNotExist:
+        return f'Provisioning job {job_id} no longer exists'
+
+    if job.status == 'ready':
+        return f'{job.site.domain} is already ready'
+
+    cloudflare = CloudflareSettings.objects.filter(is_active=True).first()
+    if not cloudflare or not cloudflare.api_token:
+        _set_provision_step(job, 'failed', 'Cloudflare is not configured', 0, 'Missing Cloudflare API token')
+        return 'Missing Cloudflare API token'
+    if not settings.CLOUDPANEL_ORIGIN_IP:
+        _set_provision_step(job, 'failed', 'CloudPanel origin IP is not configured', 0, 'Set CLOUDPANEL_ORIGIN_IP')
+        return 'Missing CLOUDPANEL_ORIGIN_IP'
+
+    job.attempt_count += 1
+    job.save(update_fields=['attempt_count', 'updated_at'])
+    domain = job.site.domain
+
+    try:
+        _set_provision_step(job, 'dns', 'Pointing the domain to CloudPanel', 15)
+        apex_id = upsert_cloudflare_dns_record(
+            cloudflare.api_token,
+            job.cloudflare_zone_id,
+            domain,
+            'A',
+            settings.CLOUDPANEL_ORIGIN_IP,
+            proxied=False,
+        )
+        www_id = upsert_cloudflare_dns_record(
+            cloudflare.api_token,
+            job.cloudflare_zone_id,
+            f'www.{domain}',
+            'CNAME',
+            domain,
+            proxied=False,
+        )
+        job.cloudflare_apex_record_id = apex_id
+        job.cloudflare_www_record_id = www_id
+        job.save(update_fields=[
+            'cloudflare_apex_record_id',
+            'cloudflare_www_record_id',
+            'updated_at',
+        ])
+
+        _set_provision_step(job, 'cloudpanel', 'CloudPanel is installing WordPress', 45)
+        response = CloudPanelClient().provision({
+            'action': 'provision',
+            'domain': domain,
+            'site_title': job.site_title,
+            'site_user': job.site_user,
+            'site_user_password': decrypt_secret(job.encrypted_site_user_password),
+            'database_name': job.database_name,
+            'database_user': job.database_user,
+            'database_password': decrypt_secret(job.encrypted_database_password),
+            'admin_user': job.site.wp_username,
+            'admin_password': decrypt_secret(job.encrypted_admin_password),
+            'admin_email': job.site.wp_admin_email,
+            'php_version': settings.CLOUDPANEL_PHP_VERSION,
+            'vhost_template': settings.CLOUDPANEL_VHOST_TEMPLATE,
+            'document_root': settings.CLOUDPANEL_DOCUMENT_ROOT_TEMPLATE.format(
+                site_user=job.site_user,
+                domain=domain,
+            ),
+        })
+        application_password = str(response.get('application_password') or '').strip()
+        if not application_password:
+            raise CloudPanelError('CloudPanel did not return a WordPress application password')
+
+        _set_provision_step(job, 'proxy', 'Enabling the Cloudflare proxy', 82)
+        set_cloudflare_record_proxied(
+            cloudflare.api_token, job.cloudflare_zone_id, apex_id, True
+        )
+        set_cloudflare_record_proxied(
+            cloudflare.api_token, job.cloudflare_zone_id, www_id, True
+        )
+
+        _set_provision_step(job, 'verifying', 'Checking WordPress authentication', 94)
+        verified, message = verify_wp_credentials(
+            domain,
+            job.site.wp_username,
+            application_password,
+        )
+        if not verified:
+            raise CloudPanelError(f'WordPress verification is not ready: {message}')
+
+        job.site.wp_app_password = application_password
+        job.site.is_verified = True
+        job.site.is_fresh_installation = True
+        job.site.cloudflare_zone_id = job.cloudflare_zone_id
+        job.site.server_ip = settings.CLOUDPANEL_ORIGIN_IP
+        job.site.save(update_fields=[
+            'wp_app_password', 'is_verified', 'is_fresh_installation',
+            'cloudflare_zone_id', 'server_ip', 'updated_at',
+        ])
+        job.completed_at = timezone.now()
+        job.status = 'ready'
+        job.current_step = 'WordPress is ready'
+        job.progress = 100
+        job.last_error = ''
+        job.save(update_fields=[
+            'completed_at', 'status', 'current_step', 'progress',
+            'last_error', 'updated_at',
+        ])
+        return f'{domain} is ready'
+
+    except (CloudPanelError, CloudflareAPIError, ValueError) as exc:
+        message = str(exc)[:1000]
+        if self.request.retries < self.max_retries:
+            _set_provision_step(
+                job,
+                job.status,
+                f'Retrying in 60 seconds: {message[:120]}',
+                job.progress,
+                message,
+            )
+            raise self.retry(exc=exc, countdown=60)
+        _set_provision_step(job, 'failed', 'Provisioning failed', job.progress, message)
+        return f'Provisioning failed: {message}'
+    except Exception as exc:
+        message = f'Unexpected provisioning error: {exc}'[:1000]
+        _set_provision_step(job, 'failed', 'Provisioning failed', job.progress, message)
+        raise

@@ -1,5 +1,14 @@
 from django.contrib import admin
-from .models import Site, APIKey, ProxySettings, CloudflareSettings, KeywordList, Article
+
+from .models import (
+    APIKey,
+    Article,
+    CloudflareSettings,
+    KeywordList,
+    ProxySettings,
+    Site,
+    WordPressProvisionJob,
+)
 
 
 @admin.register(CloudflareSettings)
@@ -38,3 +47,14 @@ class ArticleAdmin(admin.ModelAdmin):
     list_filter = ('status', 'site')
     search_fields = ('title',)
 
+
+@admin.register(WordPressProvisionJob)
+class WordPressProvisionJobAdmin(admin.ModelAdmin):
+    list_display = ('site', 'status', 'progress', 'current_step', 'updated_at')
+    list_filter = ('status',)
+    search_fields = ('site__domain', 'cloudflare_zone_id')
+    readonly_fields = (
+        'encrypted_site_user_password',
+        'encrypted_database_password',
+        'encrypted_admin_password',
+    )

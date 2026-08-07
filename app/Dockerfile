@@ -11,6 +11,7 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     postgresql-client \
+    openssh-client \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 

@@ -169,6 +169,23 @@ CACHES = {
     },
 }
 
+# CloudPanel provisioning runs through a restricted SSH wrapper on the host.
+CLOUDPANEL_SSH_HOST = os.environ.get('CLOUDPANEL_SSH_HOST', '152.53.53.101')
+CLOUDPANEL_SSH_PORT = int(os.environ.get('CLOUDPANEL_SSH_PORT', '22'))
+CLOUDPANEL_SSH_USER = os.environ.get('CLOUDPANEL_SSH_USER', 'wp-provisioner')
+CLOUDPANEL_SSH_KEY_PATH = os.environ.get('CLOUDPANEL_SSH_KEY_PATH', '/run/secrets/cloudpanel/id_ed25519')
+CLOUDPANEL_KNOWN_HOSTS_PATH = os.environ.get('CLOUDPANEL_KNOWN_HOSTS_PATH', '/run/secrets/cloudpanel/known_hosts')
+CLOUDPANEL_WRAPPER_COMMAND = os.environ.get('CLOUDPANEL_WRAPPER_COMMAND', 'sudo -n /usr/local/sbin/wp-manager-cloudpanel')
+CLOUDPANEL_PROVISION_TIMEOUT = int(os.environ.get('CLOUDPANEL_PROVISION_TIMEOUT', '900'))
+CLOUDPANEL_ORIGIN_IP = os.environ.get('CLOUDPANEL_ORIGIN_IP', '152.53.53.101')
+CLOUDPANEL_PHP_VERSION = os.environ.get('CLOUDPANEL_PHP_VERSION', '8.3')
+CLOUDPANEL_VHOST_TEMPLATE = os.environ.get('CLOUDPANEL_VHOST_TEMPLATE', 'WordPress')
+CLOUDPANEL_DOCUMENT_ROOT_TEMPLATE = os.environ.get(
+    'CLOUDPANEL_DOCUMENT_ROOT_TEMPLATE',
+    '/home/{site_user}/htdocs/{domain}',
+)
+CLOUDPANEL_ADMIN_EMAIL = os.environ.get('CLOUDPANEL_ADMIN_EMAIL', '')
+
 # django-celery-beat
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 
