@@ -4,6 +4,8 @@
 
 {% block header_actions %}
 <div class="header-actions">
+    <a href="{% url 'dashboard:site_design' site.domain %}" class="btn btn-secondary">Design Templates</a>
+    <a href="{% url 'dashboard:site_categories' site.domain %}" class="btn btn-secondary">Category Backfill</a>
     <a href="{% url 'dashboard:site_logs' site.domain %}" class="btn btn-secondary">📋 View Logs</a>
     <a href="{% url 'dashboard:edit_site' site.domain %}" class="btn btn-secondary">✏️ Edit</a>
     <form method="post" action="{% url 'dashboard:verify_site' site.domain %}" style="display:inline;">

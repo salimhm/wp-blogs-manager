@@ -44,6 +44,28 @@ class Site(models.Model):
         return f"{status} {self.domain}"
 
 
+class CategoryBackfill(models.Model):
+    site = models.ForeignKey(Site, on_delete=models.CASCADE, related_name='category_backfills')
+    status = models.CharField(max_length=12, default='queued')
+    configuration = models.JSONField()
+    page = models.PositiveIntegerField(default=1)
+    last_post_id = models.PositiveBigIntegerField(default=0)
+    scanned = models.PositiveIntegerField(default=0)
+    assigned = models.PositiveIntegerField(default=0)
+    last_error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['site'],
+                condition=models.Q(status__in=['queued', 'failed']),
+                name='one_open_category_backfill_per_site',
+            ),
+        ]
+
+
 class WordPressProvisionJob(models.Model):
     """Durable progress and secrets for a CloudPanel WordPress installation."""
 

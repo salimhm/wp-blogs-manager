@@ -1,0 +1,47 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}Design Templates{% endblock %}
+
+{% block header_actions %}
+<a href="{% url 'dashboard:site_detail' site.domain %}" class="btn btn-secondary">{{ site.domain }}</a>
+<a href="https://{{ site.domain }}/" class="btn btn-secondary">View site</a>
+{% endblock %}
+
+{% block content %}
+<div class="card">
+    <div class="card-header"><h2 class="card-title">{{ site.domain }}</h2></div>
+    <div class="card-body">
+        {% if design_error %}
+            <p>{{ design_error }}</p>
+        {% else %}
+            <p class="text-muted">Apply a design to the homepage, posts, and archives.</p>
+            <div class="detail-grid">
+                {% for template in design.templates %}
+                <form class="card" method="post">
+                    {% csrf_token %}
+                    <input type="hidden" name="template" value="{{ template.id }}">
+                    <div class="card-body design-template">
+                        <h3>{{ template.name }}</h3>
+                        <p>{{ template.description }}</p>
+                        {% if template.id == design.active %}
+                        <span class="badge badge-success">Active</span>
+                        {% else %}
+                        <button class="btn btn-primary" type="submit">Apply {{ template.name }}</button>
+                        {% endif %}
+                    </div>
+                </form>
+                {% empty %}
+                <p>Design templates currently require GeneratePress.</p>
+                {% endfor %}
+            </div>
+            {% if design.active != 'default' %}
+            <form class="design-restore" method="post">
+                {% csrf_token %}
+                <input type="hidden" name="template" value="default">
+                <button class="btn btn-secondary" type="submit">Restore original design</button>
+            </form>
+            {% endif %}
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

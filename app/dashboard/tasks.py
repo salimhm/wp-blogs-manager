@@ -9,6 +9,96 @@ from .utils import (
     publish_to_wordpress,
 )
 
+
+@shared_task(acks_late=True, reject_on_worker_lost=True)
+def process_category_backfill(run_id, page):
+    from django.db import transaction
+    from .categories import (
+        BATCH_SIZE, CategoryError, WordPressCategories, category_in_permalink, eligible, post_title, suggested_category,
+    )
+    from .models import CategoryBackfill
+
+    with transaction.atomic():
+        run = (
+            CategoryBackfill.objects.select_for_update()
+            .filter(id=run_id, page=page, status='queued')
+            .first()
+        )
+        if run is None:
+            return
+        config = run.configuration
+        selected = config.get('selected')
+        try:
+            wp = WordPressCategories(run.site)
+            if selected is None:
+                posts, total_pages = wp.posts(page)
+            else:
+                posts = wp.selected_posts(list(selected))
+                total_pages = 1
+
+            assignments = []
+            scanned = 0
+            last_post_id = run.last_post_id
+            for post in sorted(posts, key=lambda post: post['id']):
+                post_id = post['id']
+                if post_id <= run.last_post_id:
+                    continue
+                if post_id > config['max_id']:
+                    total_pages = page
+                    break
+                if eligible(post, config['source_id']) and not category_in_permalink(post, config['source']):
+                    title = post_title(post)
+                    if selected is None:
+                        slug = suggested_category(title, config['rules'])
+                        category_id = config['targets'].get(slug)
+                    else:
+                        proposal = selected.get(str(post_id))
+                        category_id = proposal['category_id'] if proposal and proposal['title'] == title else None
+                    if category_id is not None:
+                        assignments.append((post_id, category_id))
+                last_post_id = post_id
+                scanned += 1
+
+            if assignments:
+                ids = {category_id for _, category_id in assignments}
+                slugs = {slug: term_id for slug, term_id in config['targets'].items() if term_id in ids}
+                expected = {config['source']: config['source_id'], **slugs}
+                terms = wp.categories(expected)
+                if not all(terms.get(slug, {}).get('id') == term_id for slug, term_id in expected.items()):
+                    raise CategoryError('A category changed in WordPress. Close this run and generate a fresh preview.')
+
+                for offset in range(0, len(assignments), BATCH_SIZE):
+                    batch = assignments[offset:offset + BATCH_SIZE]
+                    confirmed = wp.assign(batch)
+                    run.assigned += confirmed
+                    if confirmed != len(batch):
+                        raise CategoryError('WordPress did not confirm all assignments. Check post editing permissions and resume.')
+            run.last_post_id = last_post_id
+            run.scanned += scanned
+        except CategoryError as exc:
+            run.status = 'failed'
+            run.last_error = str(exc)
+        else:
+            run.last_error = ''
+            if page < total_pages:
+                run.page += 1
+                transaction.on_commit(lambda: enqueue_category_backfill(run.id, run.page))
+            else:
+                run.status = 'complete'
+        run.save(update_fields=['status', 'last_error', 'page', 'last_post_id', 'scanned', 'assigned', 'updated_at'])
+
+
+def enqueue_category_backfill(run_id, page):
+    from kombu.exceptions import OperationalError
+    from .models import CategoryBackfill
+
+    try:
+        process_category_backfill.apply_async(args=[run_id, page], countdown=1)
+    except OperationalError:
+        CategoryBackfill.objects.filter(pk=run_id, page=page, status='queued').update(
+            status='failed', last_error='Could not reach the task queue. Resume the run to try again.'
+        )
+
 @shared_task
 def process_daily_run(run_id):
     """

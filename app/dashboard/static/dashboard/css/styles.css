@@ -674,6 +674,22 @@ a:hover {
 }
 
 /* Detail Grid */
+.design-template {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: .65rem;
+}
+
+.design-template .btn,
+.design-template .badge {
+    margin-top: auto;
+}
+
+.design-restore {
+    margin-top: 1rem;
+}
+
 .detail-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));

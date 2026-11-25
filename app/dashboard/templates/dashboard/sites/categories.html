@@ -1,0 +1,100 @@
+{% extends 'dashboard/base.html' %}
+
+{% block page_title %}Category Backfill{% endblock %}
+
+{% block header_actions %}
+<a href="{% url 'dashboard:site_detail' site.domain %}" class="btn btn-secondary">{{ site.domain }}</a>
+{% endblock %}
+
+{% block content %}
+<div class="detail-grid">
+    <section class="card">
+        <div class="card-header"><h2 class="card-title">Match FAQ titles</h2></div>
+        <div class="card-body">
+            <p class="text-muted">Suggest categories for published posts in the current category or with no category. Titles without a clear match are skipped.</p>
+            <form method="post">
+                {% csrf_token %}
+                {% for field in form %}
+                <div class="form-group">
+                    <label for="{{ field.id_for_label }}" class="form-label">{{ field.label }}</label>
+                    {{ field }}
+                    {% if field.help_text %}<p class="form-hint">{{ field.help_text }}</p>{% endif %}
+                    {{ field.errors }}
+                </div>
+                {% endfor %}
+                <button class="btn btn-primary" name="action" value="preview">Preview assignments</button>
+                {% if preview.missing %}
+                <button class="btn btn-secondary" name="action" value="create_categories">Create missing categories</button>
+                {% endif %}
+            </form>
+        </div>
+    </section>
+
+    {% if run %}
+    <section class="card">
+        <div class="card-header"><h2 class="card-title">Latest run</h2></div>
+        <div class="card-body">
+            <p><strong>{% if run.status == 'queued' %}Active{% else %}{{ run.status|capfirst }}{% endif %}</strong> · {{ run.scanned }} scanned · {{ run.assigned }} assigned</p>
+            {% if run.last_error %}<p>{{ run.last_error }}</p>{% endif %}
+            {% if run.status == 'failed' or run.status == 'queued' %}
+            <form method="post">
+                {% csrf_token %}
+                <input type="hidden" name="run_id" value="{{ run.pk }}">
+                <button class="btn btn-secondary" name="action" value="resume">Resume run</button>
+                <button class="btn btn-secondary" name="action" value="close">Close run</button>
+                <a href="{% url 'dashboard:site_categories' site.domain %}" class="btn btn-secondary">Refresh progress</a>
+            </form>
+            {% endif %}
+        </div>
+    </section>
+    {% endif %}
+</div>
+
+{% if preview %}
+<section class="card">
+    <div class="card-header">
+        <h2 class="card-title">Preview page {{ preview.page }} of {{ preview.total_pages|default:1 }}</h2>
+    </div>
+    <div class="card-body">
+        <p>{{ preview.matched }} assignments ready to apply.</p>
+        {% if preview.skipped_urls %}<p>Skipped {{ preview.skipped_urls }} posts whose URL includes the current category slug.</p>{% endif %}
+        {% if preview.missing %}
+        <p>Create these WordPress categories to use their rules. {{ preview.missing|join:", " }}</p>
+        {% endif %}
+        <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="preview" value="{{ preview.token }}">
+            {% if preview.rows %}
+            <table class="table">
+                <thead><tr><th scope="col">Post title</th><th scope="col">Suggested category</th><th scope="col">Apply category</th></tr></thead>
+                <tbody>
+                    {% for row in preview.rows %}
+                    <tr>
+                        <td id="post-title-{{ row.id }}">{{ row.title }}</td>
+                        <td>{{ row.suggestion|default:"Review manually" }}</td>
+                        <td>
+                            {% if preview.choices %}
+                            <select class="form-select" name="category_{{ row.id }}" aria-labelledby="post-title-{{ row.id }}">
+                                <option value="">Skip</option>
+                                {% for id, name in preview.choices %}
+                                <option value="{{ id }}"{% if id == row.proposed %} selected{% endif %}>{{ name }}</option>
+                                {% endfor %}
+                            </select>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% endif %}
+            {% if preview.rows and preview.choices %}
+            <button class="btn btn-primary" name="action" value="apply_preview">Apply selected assignments</button>
+            {% endif %}
+            {% if preview.matched and not preview.missing %}
+            <button class="btn btn-secondary" name="action" value="apply_archive">Apply these rules across the archive</button>
+            {% endif %}
+        </form>
+    </div>
+</section>
+{% endif %}
+{% endblock %}

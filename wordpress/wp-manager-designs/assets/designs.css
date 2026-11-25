@@ -1,0 +1,214 @@
+.wpm-design {
+    --wpm-paper: #fcfaf4;
+    --wpm-surface: #f0eddf;
+    --wpm-ink: #20271d;
+    --wpm-accent: #34442d;
+    --wpm-line: #c8c9b7;
+    --wpm-heading: Georgia, "Times New Roman", serif;
+    background: var(--wpm-paper);
+    color: var(--wpm-ink);
+}
+
+.wpm-design-journal {
+    --wpm-paper: #fffaf4;
+    --wpm-surface: #f1e5d9;
+    --wpm-ink: #30241e;
+    --wpm-accent: #873e2b;
+    --wpm-line: #ccb2a1;
+}
+
+.wpm-design-handbook {
+    --wpm-paper: #f8f9f6;
+    --wpm-surface: #e8edf0;
+    --wpm-ink: #1c2b37;
+    --wpm-accent: #294b60;
+    --wpm-line: #b9c9cf;
+    --wpm-heading: system-ui, sans-serif;
+}
+
+.wpm-design :is(.site-header, .main-navigation, .main-nav ul li a, .inside-article, .page-header, .inside-page-header, .site-info, .sidebar .widget) {
+    background-color: var(--wpm-paper);
+    color: var(--wpm-ink);
+}
+
+.wpm-design :is(.main-title, .entry-title, .page-title, .wpm-home h1, .wpm-home h2, .wpm-home h3) {
+    font-family: var(--wpm-heading);
+    color: var(--wpm-ink);
+}
+
+.wpm-design .main-title a {
+    color: var(--wpm-ink);
+    font-size: clamp(1.55rem, 3.2vw, 2.65rem);
+}
+
+.wpm-kitchen-wisdom .main-title a {
+    display: inline-flex;
+    align-items: center;
+    gap: .25em;
+}
+
+.wpm-kitchen-wisdom .site-branding-container:not(:has(.site-logo)) .main-title a::before,
+.wpm-kitchen-wisdom .site-branding:not(:has(.site-logo)):not(.site-branding-container .site-branding) .main-title a::before {
+    content: "";
+    width: .95em;
+    height: .95em;
+    border-radius: 50%;
+    background: url("kitchen-wisdom-mark.png") center / cover;
+}
+
+.wpm-design .wpm-home a,
+.wpm-design :is(.entry-content, .entry-meta, .page-header) a {
+    color: var(--wpm-accent);
+    text-underline-offset: .2em;
+}
+
+.wpm-design.single-post .entry-content {
+    max-width: 70ch;
+    font-size: 1.0625rem;
+    line-height: 1.7;
+}
+
+.wpm-design.single-post .entry-header {
+    max-width: 48rem;
+}
+
+.wpm-design.home.blog:not(.paged) #page {
+    max-width: none;
+}
+
+.wpm-wrap {
+    width: min(76rem, calc(100% - clamp(2rem, 8vw, 8rem)));
+    margin-inline: auto;
+}
+
+.wpm-hero {
+    background: var(--wpm-surface);
+}
+
+.wpm-hero-inner {
+    display: grid;
+    grid-template-columns: minmax(0, .9fr) minmax(0, 1.28fr);
+    align-items: center;
+    gap: clamp(1.5rem, 5vw, 5rem);
+    padding-block: clamp(2.2rem, 5.8vw, 5.3rem);
+}
+
+.wpm-hero-inner:not(:has(.wpm-feature)) {
+    grid-template-columns: 1fr;
+}
+
+.wpm-intro h1 {
+    margin: 0;
+    font-size: clamp(2.9rem, 6.8vw, 6.7rem);
+    line-height: .97;
+    letter-spacing: -.07em;
+    overflow-wrap: anywhere;
+}
+
+.wpm-kitchen-wisdom .wpm-intro h1 {
+    max-width: 9ch;
+}
+
+.wpm-intro p {
+    max-width: 34ch;
+    margin-block: 1.3rem;
+}
+
+.wpm-home a.wpm-button {
+    display: inline-block;
+    padding: .7rem 1rem;
+    margin-top: .65rem;
+    background: var(--wpm-accent);
+    color: var(--wpm-paper);
+    font-weight: 650;
+}
+
+.wpm-feature {
+    margin: 0;
+}
+
+.wpm-feature img {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 3 / 2;
+    object-fit: cover;
+}
+
+.wpm-feature figcaption {
+    padding-top: .6rem;
+    font-size: .9rem;
+}
+
+.wpm-section {
+    padding-block: clamp(1.8rem, 4vw, 3.6rem);
+    border-bottom: 1px solid var(--wpm-line);
+}
+
+.wpm-section h2 {
+    font-size: clamp(1.8rem, 4vw, 3.2rem);
+    letter-spacing: -.035em;
+}
+
+.wpm-home :is(.wpm-guides, .wpm-topics) {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.4rem 2rem;
+    margin: 0;
+    list-style: none;
+}
+
+.wpm-home :is(.wpm-guides, .wpm-topics) li {
+    padding-top: .9rem;
+    border-top: 1px solid var(--wpm-line);
+}
+
+.wpm-guides h3 {
+    font-size: clamp(1.3rem, 2.3vw, 1.85rem);
+}
+
+.wpm-home a:hover,
+.wpm-home a:focus-visible {
+    text-decoration: underline;
+}
+
+.wpm-design-journal .wpm-hero-inner {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: 62rem;
+}
+
+.wpm-design-journal .wpm-intro {
+    text-align: center;
+}
+
+.wpm-design-journal .wpm-intro :is(h1, p) {
+    max-width: none;
+}
+
+.wpm-design-journal .wpm-home :is(.wpm-guides, .wpm-topics) {
+    grid-template-columns: 1fr;
+    max-width: 48rem;
+}
+
+.wpm-design-handbook .wpm-hero-inner {
+    padding-block: clamp(1.6rem, 4vw, 3.6rem);
+}
+
+.wpm-design-handbook .wpm-intro h1 {
+    font-size: clamp(2.5rem, 5vw, 4.8rem);
+}
+
+.wpm-design-handbook .wpm-feature img {
+    aspect-ratio: 2 / 1;
+}
+
+.wpm-design-handbook .wpm-home :is(.wpm-guides, .wpm-topics) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 680px) {
+    .wpm-home .wpm-hero-inner,
+    .wpm-design .wpm-home :is(.wpm-guides, .wpm-topics) {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}

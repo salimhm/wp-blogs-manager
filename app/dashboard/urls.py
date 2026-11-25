@@ -1,5 +1,5 @@
 from django.urls import path
-from . import views
+from . import category_views, views
 
 app_name = 'dashboard'
 
@@ -15,6 +15,8 @@ urlpatterns = [
     path('sites/', views.site_list, name='site_list'),
     path('sites/add/', views.add_site, name='add_site'),
     path('sites/<str:site_domain>/', views.site_detail, name='site_detail'),
+    path('sites/<str:site_domain>/design/', views.site_design, name='site_design'),
+    path('sites/<str:site_domain>/categories/', category_views.site_categories, name='site_categories'),
     path('sites/<str:site_domain>/edit/', views.edit_site, name='edit_site'),
     path('sites/<str:site_domain>/delete/', views.delete_site, name='delete_site'),
     path('sites/<str:site_domain>/verify/', views.verify_site, name='verify_site'),

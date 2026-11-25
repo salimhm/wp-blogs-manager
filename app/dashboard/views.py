@@ -389,6 +389,32 @@ def site_detail(request, site_domain):
     return render(request, 'dashboard/sites/detail.html', context)
 
 
+@require_http_methods(['GET', 'POST'])
+def site_design(request, site_domain):
+    from .designs import DesignError, wordpress_design
+
+    site = get_object_or_404(Site, domain=site_domain)
+    if request.method == 'POST':
+        template = request.POST.get('template', '')
+        if not template:
+            messages.error(request, 'Choose a design template.')
+        else:
+            try:
+                wordpress_design(site, template)
+            except DesignError as exc:
+                messages.error(request, str(exc))
+            else:
+                messages.success(request, 'WordPress saved the design.')
+        return redirect('dashboard:site_design', site_domain=site.domain)
+
+    context = {'site': site}
+    try:
+        context['design'] = wordpress_design(site)
+    except DesignError as exc:
+        context['design_error'] = str(exc)
+    return render(request, 'dashboard/sites/design.html', context)
+
+
 def site_logs(request, site_domain):
     """View site error logs."""
     from .models import SiteLog
